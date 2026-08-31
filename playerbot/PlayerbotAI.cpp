@@ -53,6 +53,7 @@
 #endif
 #include "AI/ScriptDevAI/ScriptDevAIMgr.h"
 #include "strategy/values/GuildValues.h"
+#include "strategy/values/TrainerValues.h"
 
 using namespace ai;
 
@@ -1158,6 +1159,11 @@ void PlayerbotAI::UpdateAIInternal(uint32 elapsed, bool minimal)
             chatReplies.push(*i);
         }
     }
+
+    // AI stream: drain intents, emit events and refresh the snapshot. Runs here,
+    // on the tick, before DoNextAction, so an intent takes effect this update.
+    UpdateAiStream();
+
     // logout if logout timer is ready or if instant logout is possible
     if (bot->IsStunnedByLogout() || bot->GetSession()->isLogingOut())
     {
@@ -1370,6 +1376,20 @@ void PlayerbotAI::HandleCommand(uint32 type, const std::string& text, Player& fr
 {
     std::string filtered = text;
 
+    // AI stream: report whispers from real players before the security check, so
+    // a claimed bot hears strangers too, not only those allowed to command it.
+    // Commands the bot synthesises for itself go through here as whispers as
+    // well, hence the sender test. A whisper carrying the command separator is
+    // reported once per part by the recursion below rather than twice here.
+    if (aiControlled && type == CHAT_MSG_WHISPER && &fromPlayer != bot && fromPlayer.isRealPlayer() &&
+        filtered.find(sPlayerbotAIConfig.commandSeparator) == std::string::npos)
+    {
+        std::ostringstream aiEvent;
+        aiEvent << "{\"type\":\"whisper\",\"from\":\"" << PlayerbotLLMInterface::SanitizeForJson(fromPlayer.GetName())
+                << "\",\"text\":\"" << PlayerbotLLMInterface::SanitizeForJson(filtered) << "\"}";
+        PushAiEvent(aiEvent.str());
+    }
+
     if (!IsAllowedCommand(filtered) && !GetSecurity()->CheckLevelFor(PlayerbotSecurityLevel::PLAYERBOT_SECURITY_INVITE, type != CHAT_MSG_WHISPER, &fromPlayer))
         return;
 
@@ -1533,6 +1553,20 @@ void PlayerbotAI::HandleBotOutgoingPacket(const WorldPacket& packet)
 {
     //if (packet.empty())
     //    return;
+
+    // AI stream: the invite is already recorded on the bot by the time this
+    // packet reaches it, so the inviter is read from there rather than from the
+    // packet body, whose layout differs between client versions.
+    if (aiControlled && packet.GetOpcode() == SMSG_GROUP_INVITE)
+    {
+        std::string inviter;
+        if (Group* invite = bot->GetGroupInvite())
+            inviter = invite->GetLeaderName();
+
+        std::ostringstream aiEvent;
+        aiEvent << "{\"type\":\"group_invite\",\"from\":\"" << PlayerbotLLMInterface::SanitizeForJson(inviter) << "\"}";
+        PushAiEvent(aiEvent.str());
+    }
 
 	switch (packet.GetOpcode())
 	{
@@ -2014,12 +2048,15 @@ void PlayerbotAI::ChangeEngine(BotState type)
         {
         case BotState::BOT_STATE_COMBAT:
             sLog.outDebug( "=== %s COMBAT ===", bot->GetName());
+            PushAiEvent("{\"type\":\"combat\"}");
             break;
         case BotState::BOT_STATE_NON_COMBAT:
             sLog.outDebug( "=== %s NON-COMBAT ===", bot->GetName());
+            PushAiEvent("{\"type\":\"non-combat\"}");
             break;
         case BotState::BOT_STATE_DEAD:
             sLog.outDebug( "=== %s DEAD ===", bot->GetName());
+            PushAiEvent("{\"type\":\"dead\"}");
             break;
         case BotState::BOT_STATE_REACTION:
             sLog.outDebug("=== %s REACTION ===", bot->GetName());
@@ -6474,8 +6511,457 @@ void PlayerbotAI::EnsureDefaultMovementStrategy(Player* requester)
     }
 }
 
-std::string PlayerbotAI::HandleRemoteCommand(std::string command)
+// --- AI stream interface -----------------------------------------------------
+// Lets an external process claim a bot, read its strategic situation and issue
+// high-level intents over the existing command server. See
+// docs/READ_WRITE_SYSTEMS.md for the contract, the schema and the invariants.
+//
+// The rule the whole thing hangs on: the command-server thread never touches a
+// game object. It copies strings out of, and pushes strings into, the buffers
+// below under aiStreamMutex. Everything that reads or writes the world happens
+// on the bot's tick.
+
+// An LLM reasons on a multi-second cadence, so rebuilding the snapshot every
+// tick would be pure waste.
+static const time_t AI_STREAM_SNAPSHOT_INTERVAL = 2;
+// Bounded so a claimed bot nobody polls cannot grow without limit.
+static const size_t AI_STREAM_MAX_EVENTS = 256;
+static const size_t AI_STREAM_MAX_INTENTS = 64;
+// Snapshot list limits - the AI wants a situation report, not an inventory.
+static const size_t AI_STREAM_MAX_NEARBY = 10;
+static const size_t AI_STREAM_MAX_GROUP = 40;
+// Above this the bot is not short of mana in any way worth reasoning about.
+static const uint32 AI_STREAM_HIGH_MANA = 75;
+
+// Quotes and escapes free text. Names, quest titles and whisper bodies are
+// player- and DB-controlled and will otherwise break the JSON, or the
+// newline framing the command protocol depends on.
+static std::string AiJsonString(const std::string& value)
 {
+    return "\"" + PlayerbotLLMInterface::SanitizeForJson(value) + "\"";
+}
+
+// Bands, not numbers: the AI makes strategic decisions, and a raw percentage
+// only invites it to attempt the tactical ones the engine already handles.
+static const char* AiHealthBand(uint32 pct)
+{
+    if (pct <= sPlayerbotAIConfig.criticalHealth)
+        return "critical";
+    if (pct <= sPlayerbotAIConfig.lowHealth)
+        return "low";
+    if (pct <= sPlayerbotAIConfig.mediumHealth)
+        return "medium";
+
+    return "high";
+}
+
+static const char* AiManaBand(uint32 pct)
+{
+    if (pct <= sPlayerbotAIConfig.lowMana)
+        return "critical";
+    if (pct <= sPlayerbotAIConfig.mediumMana)
+        return "low";
+    if (pct <= AI_STREAM_HIGH_MANA)
+        return "medium";
+
+    return "high";
+}
+
+// Only NPCs the AI could plausibly form an intent about. Everything else nearby
+// is noise it would have to reason past.
+static const char* AiNpcType(uint32 npcFlags)
+{
+    if (npcFlags & UNIT_NPC_FLAG_QUESTGIVER)
+        return "questgiver";
+    if (npcFlags & UNIT_NPC_FLAG_TRAINER)
+        return "trainer";
+    if (npcFlags & UNIT_NPC_FLAG_FLIGHTMASTER)
+        return "flightmaster";
+    if (npcFlags & UNIT_NPC_FLAG_INNKEEPER)
+        return "innkeeper";
+    if (npcFlags & UNIT_NPC_FLAG_BANKER)
+        return "banker";
+    if (npcFlags & UNIT_NPC_FLAG_AUCTIONEER)
+        return "auctioneer";
+    if (npcFlags & UNIT_NPC_FLAG_REPAIR)
+        return "repair";
+    if (npcFlags & UNIT_NPC_FLAG_VENDOR)
+        return "vendor";
+    if (npcFlags & UNIT_NPC_FLAG_SPIRITHEALER)
+        return "spirithealer";
+
+    return nullptr;
+}
+
+// Callable from the tick only, which is where every event source lives.
+void PlayerbotAI::PushAiEvent(const std::string& jsonEvent)
+{
+    if (!aiControlled)
+        return;
+
+    std::scoped_lock lock(aiStreamMutex);
+
+    if (aiOutboundEvents.size() >= AI_STREAM_MAX_EVENTS)
+        aiOutboundEvents.erase(aiOutboundEvents.begin());
+
+    aiOutboundEvents.push_back(jsonEvent);
+}
+
+void PlayerbotAI::UpdateAiStream()
+{
+    if (!aiControlled)
+    {
+        aiStreamWasControlled = false;
+        return;
+    }
+
+    if (!aiStreamWasControlled)
+    {
+        // First tick after a claim. Baseline the edge detectors against what is
+        // true now, so the AI is not handed a level_up or an arrival for
+        // something that happened before it was watching. Health is left
+        // un-baselined on purpose: if it inherits a bot already in trouble it
+        // should hear about that on the next poll.
+        aiStreamWasControlled = true;
+        aiSnapshotTime = 0;
+        aiHealthCritical = false;
+        aiLastTravelStatus = 0;
+        aiLastLevel = bot->GetLevel();
+    }
+
+    DrainAiIntents();
+    CheckAiStateEvents();
+
+    time_t now = time(0);
+    if (!aiSnapshotTime || now - aiSnapshotTime >= AI_STREAM_SNAPSHOT_INTERVAL)
+    {
+        // Built here, where the world thread already owns the bot. The socket
+        // only ever receives a copy of the finished string.
+        std::string snapshot = BuildSnapshot();
+        aiSnapshotTime = now;
+
+        std::scoped_lock lock(aiStreamMutex);
+        aiSnapshotCache.swap(snapshot);
+    }
+}
+
+void PlayerbotAI::DrainAiIntents()
+{
+    std::queue<std::string> intents;
+    {
+        std::scoped_lock lock(aiStreamMutex);
+        if (aiInboundIntents.empty())
+            return;
+
+        intents.swap(aiInboundIntents);
+    }
+
+    // Routed through the pipeline a whispered command already travels, so the
+    // whole existing command vocabulary is available with no new game logic.
+    // The security check is deliberately not repeated: an intent has no player
+    // behind it, and the command port is a server-operator surface.
+    ExternalEventHelper helper(aiObjectContext);
+    Player* owner = master ? master : bot;
+
+    while (!intents.empty())
+    {
+        std::string intent = intents.front();
+        intents.pop();
+
+        if (!helper.ParseChatCommand(intent, owner))
+            sLog.outDebug("%s: unrouted AI intent '%s'", bot->GetName(), intent.c_str());
+    }
+}
+
+void PlayerbotAI::CheckAiStateEvents()
+{
+    AiObjectContext* context = aiObjectContext;
+
+    // Level is compared on the tick rather than read off SMSG_LEVELUP_INFO, so
+    // the level reported is always the one the bot actually has.
+    uint32 level = bot->GetLevel();
+    if (level > aiLastLevel)
+    {
+        std::ostringstream out;
+        out << "{\"type\":\"level_up\",\"level\":" << level << "}";
+        PushAiEvent(out.str());
+    }
+
+    aiLastLevel = level;
+
+    // Edge triggered, so a long fight spent at low health reports once.
+    if (bot->IsAlive() && bot->GetMaxHealth())
+    {
+        uint32 pct = (uint32)(((float)bot->GetHealth() / (float)bot->GetMaxHealth()) * 100.0f);
+        bool critical = pct <= sPlayerbotAIConfig.criticalHealth;
+
+        if (critical && !aiHealthCritical)
+        {
+            std::ostringstream out;
+            out << "{\"type\":\"hp_critical\",\"pct\":" << pct << "}";
+            PushAiEvent(out.str());
+        }
+
+        aiHealthCritical = critical;
+    }
+    else
+    {
+        aiHealthCritical = false;
+    }
+
+    // The travel flow is PREPARE -> TRAVEL -> WORK, so arrival is the
+    // TRAVEL -> WORK edge.
+    if (TravelTarget* travelTarget = AI_VALUE(TravelTarget*, "travel target"))
+    {
+        uint8 status = (uint8)travelTarget->GetStatus();
+
+        if (status == (uint8)TravelStatus::TRAVEL_STATUS_WORK &&
+            aiLastTravelStatus == (uint8)TravelStatus::TRAVEL_STATUS_TRAVEL)
+        {
+            std::string destination;
+            if (TravelDestination* travelDestination = travelTarget->GetDestination())
+                destination = travelDestination->GetTitle();
+
+            std::ostringstream out;
+            out << "{\"type\":\"arrived\",\"destination\":" << AiJsonString(destination) << "}";
+            PushAiEvent(out.str());
+        }
+
+        aiLastTravelStatus = status;
+    }
+}
+
+// Serialises state the engine has already computed into one JSON line. This is
+// a serialiser, not a data source - nothing here is a new query.
+std::string PlayerbotAI::BuildSnapshot()
+{
+    AiObjectContext* context = aiObjectContext;
+    std::ostringstream out;
+
+    out << "{\"v\":1";
+    out << ",\"guid\":" << bot->GetObjectGuid().GetCounter();
+    out << ",\"name\":" << AiJsonString(bot->GetName());
+    out << ",\"level\":" << (uint32)bot->GetLevel();
+    out << ",\"class\":" << AiJsonString(ChatHelper::formatClass(bot->getClass()));
+
+    std::string zone;
+    if (const AreaTableEntry* areaEntry = GetAreaEntryByAreaID(sServerFacade.GetAreaId(bot)))
+    {
+        if (AreaTableEntry const* zoneEntry = areaEntry->zone ? GetAreaEntryByAreaID(areaEntry->zone) : areaEntry)
+            zone = zoneEntry->area_name[0];
+    }
+
+    out << ",\"zone\":" << AiJsonString(zone);
+
+    out << std::fixed << std::setprecision(2);
+    out << ",\"position\":{\"map\":" << bot->GetMapId()
+        << ",\"x\":" << bot->GetPositionX()
+        << ",\"y\":" << bot->GetPositionY()
+        << ",\"z\":" << bot->GetPositionZ() << "}";
+    out.unsetf(std::ios_base::floatfield);
+
+    uint32 healthPct = bot->GetMaxHealth() ? (uint32)(((float)bot->GetHealth() / (float)bot->GetMaxHealth()) * 100.0f) : 0;
+    out << ",\"hp\":\"" << AiHealthBand(healthPct) << "\"";
+
+    if (bot->GetPowerType() == POWER_MANA && bot->GetMaxPower(POWER_MANA))
+    {
+        uint32 manaPct = (uint32)(((float)bot->GetPower(POWER_MANA) / (float)bot->GetMaxPower(POWER_MANA)) * 100.0f);
+        out << ",\"mana\":\"" << AiManaBand(manaPct) << "\"";
+    }
+    else
+    {
+        out << ",\"mana\":\"none\"";
+    }
+
+    out << ",\"state\":\"";
+    switch (currentState)
+    {
+    case BotState::BOT_STATE_COMBAT:
+        out << "combat";
+        break;
+    case BotState::BOT_STATE_DEAD:
+        out << "dead";
+        break;
+    case BotState::BOT_STATE_NON_COMBAT:
+        out << "non-combat";
+        break;
+    default:
+        out << "unknown";
+        break;
+    }
+    out << "\"";
+
+    out << ",\"money\":" << AiJsonString(ChatHelper::formatMoney(bot->GetMoney()));
+
+    // Built from the global trainable spell map and filtered by class, level and
+    // prerequisites, so this answers "have I anything to train" from anywhere -
+    // no trainer has to be nearby.
+    out << ",\"trainable_spells\":" << (uint32)AI_VALUE(std::vector<TrainerSpell const*>, "trainable spells").size();
+
+    Group* group = bot->GetGroup();
+    out << ",\"in_group\":" << (group ? "true" : "false");
+    out << ",\"group_members\":[";
+    if (group)
+    {
+        size_t members = 0;
+        for (GroupReference* ref = group->GetFirstMember(); ref && members < AI_STREAM_MAX_GROUP; ref = ref->next())
+        {
+            Player* member = ref->getSource();
+            if (!member || member == bot)
+                continue;
+
+            if (members++)
+                out << ",";
+
+            out << AiJsonString(member->GetName());
+        }
+    }
+    out << "]";
+
+    out << ",\"quests\":[";
+    size_t quests = 0;
+    for (uint16 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+    {
+        uint32 questId = bot->GetQuestSlotQuestId(slot);
+        if (!questId)
+            continue;
+
+        Quest const* quest = sObjectMgr.GetQuestTemplate(questId);
+        if (!quest)
+            continue;
+
+        if (quests++)
+            out << ",";
+
+        out << "{\"id\":" << questId
+            << ",\"title\":" << AiJsonString(quest->GetTitle())
+            << ",\"status\":\"" << (bot->GetQuestStatus(questId) == QUEST_STATUS_COMPLETE ? "complete" : "incomplete")
+            << "\"}";
+    }
+    out << "]";
+
+    out << ",\"nearby\":[";
+    size_t nearby = 0;
+    for (const ObjectGuid& guid : AI_VALUE(std::list<ObjectGuid>, "nearest npcs"))
+    {
+        if (nearby >= AI_STREAM_MAX_NEARBY)
+            break;
+
+        Creature* creature = GetCreature(guid);
+        if (!creature || !creature->GetCreatureInfo())
+            continue;
+
+        const char* npcType = AiNpcType(creature->GetCreatureInfo()->NpcFlags);
+        if (!npcType)
+            continue;
+
+        if (nearby++)
+            out << ",";
+
+        out << "{\"name\":" << AiJsonString(creature->GetName())
+            << ",\"type\":\"" << npcType << "\"}";
+    }
+    out << "]";
+
+    out << "}";
+
+    return out.str();
+}
+
+std::string PlayerbotAI::HandleRemoteCommand(std::string command, bool fromCommandServer)
+{
+    // --- AI stream verbs. Unlike the verbs below, these never read a game
+    // object: they copy strings that the tick prepared. See
+    // docs/READ_WRITE_SYSTEMS.md.
+    //
+    // Reachable from the command server only. The in-game "debug <verb>" path
+    // enters this function ahead of the security check, so leaving these open
+    // would let anyone who can whisper a bot claim it and run any command on it
+    // as an intent, bypassing PlayerbotSecurity entirely.
+    if (fromCommandServer)
+    {
+        if (command == "claim")
+        {
+            {
+                std::scoped_lock lock(aiStreamMutex);
+                aiOutboundEvents.clear();
+                aiSnapshotCache.clear();
+                while (!aiInboundIntents.empty())
+                    aiInboundIntents.pop();
+            }
+
+            aiControlled = true;
+            return "ok";
+        }
+        else if (command == "release")
+        {
+            aiControlled = false;
+
+            std::scoped_lock lock(aiStreamMutex);
+            aiOutboundEvents.clear();
+            aiSnapshotCache.clear();
+            while (!aiInboundIntents.empty())
+                aiInboundIntents.pop();
+
+            return "ok";
+        }
+        else if (command == "snapshot")
+        {
+            if (!aiControlled)
+                return "{\"error\":\"not claimed\"}";
+
+            std::scoped_lock lock(aiStreamMutex);
+            if (aiSnapshotCache.empty())
+                return "{\"error\":\"no snapshot yet\"}";
+
+            return aiSnapshotCache;
+        }
+        else if (command == "events")
+        {
+            if (!aiControlled)
+                return "{\"error\":\"not claimed\"}";
+
+            // Destructive read: the buffer is cleared by the poll that drains it.
+            std::vector<std::string> events;
+            {
+                std::scoped_lock lock(aiStreamMutex);
+                events.swap(aiOutboundEvents);
+            }
+
+            std::ostringstream out;
+            out << "[";
+            for (size_t i = 0; i < events.size(); ++i)
+            {
+                if (i)
+                    out << ",";
+
+                out << events[i];
+            }
+            out << "]";
+
+            return out.str();
+        }
+        else if (command.find("intent ") == 0)
+        {
+            if (!aiControlled)
+                return "{\"error\":\"not claimed\"}";
+
+            std::string intent = command.substr(7);
+            trim(intent);
+            if (intent.empty())
+                return "{\"error\":\"empty intent\"}";
+
+            // Enqueue only. "ok" means accepted, not performed - the command runs on
+            // the bot's next tick, and the AI observes the outcome in the snapshot.
+            std::scoped_lock lock(aiStreamMutex);
+            if (aiInboundIntents.size() >= AI_STREAM_MAX_INTENTS)
+                return "{\"error\":\"intent queue full\"}";
+
+            aiInboundIntents.push(intent);
+            return "ok";
+        }
+    }
+
     if (command == "state")
     {
         switch (currentState)

@@ -10,6 +10,7 @@
 #include "BotState.h"
 #include "PlayerTalentSpec.h"
 #include <stack>
+#include <atomic>
 #include "strategy/IterateItemsMask.h"
 #include "RandomPlayerbotMgr.h"
 
@@ -369,7 +370,14 @@ public:
     static std::string BotStateToString(BotState state);
     std::string GetDefaultMovementStrategy();
     void EnsureDefaultMovementStrategy(Player* requester = nullptr);
-	std::string HandleRemoteCommand(std::string command);
+	std::string HandleRemoteCommand(std::string command, bool fromCommandServer = false);
+
+    // AI stream interface. Lets an external process claim a bot, read its
+    // strategic situation and issue high-level intents. See
+    // docs/READ_WRITE_SYSTEMS.md for the contract and the threading rules.
+    bool IsAiControlled() const { return aiControlled; }
+    void PushAiEvent(const std::string& jsonEvent);
+    void UpdateAiStream();
     void HandleCommand(uint32 type, const std::string& text, Player& fromPlayer, const uint32 lang = LANG_UNIVERSAL);
     void QueueChatResponse(uint32 msgType, ObjectGuid guid1, ObjectGuid guid2, std::string message, std::string chanName, std::string name, bool noDelay = false);
 	void HandleBotOutgoingPacket(const WorldPacket& packet);
@@ -681,6 +689,11 @@ private:
     bool UpdateAIReaction(uint32 elapsed, bool minimal, bool isStunned);
     void UpdateFaceTarget(uint32 elapsed, bool minimal);
 
+    // AI stream internals. These read game state, so they run on the tick only.
+    void DrainAiIntents();
+    void CheckAiStateEvents();
+    std::string BuildSnapshot();
+
 protected:
 	Player* bot;
 	Player* master;
@@ -694,6 +707,23 @@ protected:
     std::queue<ChatCommandHolder> chatCommands;
     std::queue<ChatQueuedReply> chatReplies;
     std::mutex chatRepliesMutex;
+
+    // --- AI stream interface state (docs/READ_WRITE_SYSTEMS.md) ---
+    // Shared with the command-server thread. That thread may touch these and
+    // nothing else - never a game object. All of it is guarded by
+    // aiStreamMutex, except aiControlled, which is atomic so the tick can test
+    // it without locking.
+    std::atomic<bool> aiControlled{false};
+    std::mutex aiStreamMutex;
+    std::queue<std::string> aiInboundIntents;     // socket -> bot
+    std::vector<std::string> aiOutboundEvents;    // bot -> socket, JSON objects
+    std::string aiSnapshotCache;                  // rebuilt on the tick
+    // Tick-owned edge detection. Never read or written off the tick.
+    bool aiStreamWasControlled = false;
+    time_t aiSnapshotTime = 0;
+    bool aiHealthCritical = false;
+    uint8 aiLastTravelStatus = 0;
+    uint32 aiLastLevel = 0;
     PacketHandlingHelper botOutgoingPacketHandlers;
     PacketHandlingHelper masterIncomingPacketHandlers;
     PacketHandlingHelper masterOutgoingPacketHandlers;

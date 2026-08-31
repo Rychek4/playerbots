@@ -1,21 +1,31 @@
 # Read/Write Systems — Complete Reference
 
 How data gets **out of** a playerbot and how commands get **into** one — the
-existing engine plumbing that ships in this tree, and the AI Stream layer we
-designed on top of it.
+engine plumbing that was already here, and the AI Stream layer built on top of
+it.
 
 **Status legend used throughout:**
 
 | Marker | Meaning |
 |---|---|
-| **[IN TREE]** | Exists in this repository today, on `master`. Line references are against current `master`. |
-| **[DESIGNED]** | Specified in [`AI_STREAM_INTERFACE.md`](AI_STREAM_INTERFACE.md), **not yet written in C++**. |
+| **[PRE-EXISTING]** | Engine plumbing that was already here before the AI stream work. |
+| **[NEW]** | Added by the AI stream implementation. |
+
+All of it is in the tree. Line references are against the current branch.
 
 Companion document: [`AI_STREAM_INTERFACE.md`](AI_STREAM_INTERFACE.md) is the
 *decision record* — why the design is shaped this way, the control model
 argument, the build order. **This** document is the *reference* — the full
 read and write surface, end to end, including everything the engine already
 does that the new layer rides on.
+
+> **Not verified by a build.** The module compiles only against a full CMaNGOS
+> tree, which is not present in this repository. The JSON assembly in
+> `BuildSnapshot` was exercised in isolation against stub game state — valid
+> single-line JSON for empty lists, over-cap lists, and names and quest titles
+> containing quotes, backslashes, newlines and control characters — but the
+> module itself has not been compiled or run on a server. Treat first build and
+> first `claim` on a live server as the remaining verification.
 
 ---
 
@@ -65,7 +75,7 @@ central reuse this design buys.
 
 ## 2. Layer 0 — the plumbing already in the tree
 
-### 2.1 Transport **[IN TREE]**
+### 2.1 Transport **[PRE-EXISTING]**
 
 `playerbot/PlayerbotCommandServer.cpp`
 
@@ -89,7 +99,7 @@ client-polled. This is deliberate: an LLM reasons on a multi-second cadence, so
 sub-second event delivery buys nothing and would cost an entire async
 subsystem.
 
-### 2.2 Routing **[IN TREE]**
+### 2.2 Routing **[PRE-EXISTING]**
 
 `RandomPlayerbotMgr::HandleRemoteCommand` — `RandomPlayerbotMgr.cpp:3986`
 
@@ -108,9 +118,9 @@ Consequences worth knowing:
   `"invalid guid"`.
 * Only **random bots** registered with `RandomPlayerbotMgr` are addressable.
 
-### 2.3 Read verbs that exist today **[IN TREE]**
+### 2.3 Read verbs that exist today **[PRE-EXISTING]**
 
-`PlayerbotAI::HandleRemoteCommand` — `PlayerbotAI.cpp:6477`. A flat
+`PlayerbotAI::HandleRemoteCommand` — `PlayerbotAI.cpp:6871`. A flat
 `if/else if` chain over the command string; unmatched input returns
 `"invalid command: <command>"`.
 
@@ -139,7 +149,7 @@ Everything here is a **pull**: the caller asks, the engine reads live state and
 answers on the socket thread. See §4 for why that is a latent hazard, and why
 the new layer does not repeat it.
 
-### 2.4 The write path that exists today **[IN TREE]**
+### 2.4 The write path that exists today **[PRE-EXISTING]**
 
 This is the pipeline every in-game command already travels, and the one the
 intent router reuses wholesale.
@@ -148,7 +158,7 @@ intent router reuses wholesale.
 whisper / party / raid / guild / addon message
         │
         ▼
-PlayerbotAI::HandleCommand(type, text, fromPlayer, lang)      PlayerbotAI.cpp:1369
+PlayerbotAI::HandleCommand(type, text, fromPlayer, lang)      PlayerbotAI.cpp:1375
         │   • strips sPlayerbotAIConfig.commandPrefix
         │   • maps "#w " / "#p " / "#r " / "#a " / "#g " to a reply channel
         │   • chatFilter.Filter(...) — resolves who the command is addressed to
@@ -158,9 +168,9 @@ PlayerbotAI::HandleCommand(type, text, fromPlayer, lang)      PlayerbotAI.cpp:13
         │     wait <sec>, "d "/"do " (DoSpecificAction), "queue " (delayed)
         ▼
 chatCommands.push(ChatCommandHolder{text, owner, type, [when]})   ── enqueue
-        │                                            PlayerbotAI.h:694
+        │                                            PlayerbotAI.h:707
         ▼   ····· thread/tick boundary — nothing above touched the engine ·····
-PlayerbotAI::HandleCommands()                                  PlayerbotAI.cpp:1095
+PlayerbotAI::HandleCommands()                                  PlayerbotAI.cpp:1096
         │   • pops each holder; if holder.GetTime() is in the future,
         │     it is re-queued (this is how "queue"/staggered commands work)
         ▼
@@ -186,32 +196,40 @@ Two properties matter enormously for the AI layer:
    resolves as trigger `goto` with param `Stormwind` without any per-command
    argument parser.
 
-### 2.5 The `debug` back door **[IN TREE]**
+### 2.5 The `debug` back door **[PRE-EXISTING]**
 
-`PlayerbotAI.cpp:1429-1436`. Whispering a bot `debug <verb>` calls
+`PlayerbotAI.cpp:1449-1456`. Whispering a bot `debug <verb>` calls
 `HandleRemoteCommand(verb)` directly and sends the result back as a
 `CHAT_MSG_ADDON` packet to the whispering player. This is the in-game twin of
 the TCP read path: **same verb table, different transport.** It notably runs
 *before* the security check, so it is available to anyone who can whisper the
 bot.
 
-### 2.6 Outbound chat (the bot talking back) **[IN TREE]**
+That last property is why `HandleRemoteCommand` takes a `fromCommandServer`
+flag. The AI stream verbs (§3.2) are gated on it and only
+`RandomPlayerbotMgr::HandleRemoteCommand` passes `true`. Without the gate,
+`debug intent <anything>` would let any player who can whisper a bot run any
+command on it with `PlayerbotSecurity` bypassed — the intent path deliberately
+skips that check (§3.5), which is safe only because it is not reachable from
+in-game chat.
+
+### 2.6 Outbound chat (the bot talking back) **[PRE-EXISTING]**
 
 Distinct from the read path — this is the bot *emitting*, not being polled.
 
-* `PlayerbotAI::QueueChatResponse(...)` — `PlayerbotAI.cpp:8492`. Takes
+* `PlayerbotAI::QueueChatResponse(...)` — `PlayerbotAI.cpp:8978`. Takes
   `chatRepliesMutex`, pushes a `ChatQueuedReply` with a randomised send time
   (`+10-20s`, or `15-30s` in combat) to look human. Callable off-tick.
-* Drained at the top of `PlayerbotAI::UpdateAIInternal` — `PlayerbotAI.cpp:1139-1160`
+* Drained at the top of `PlayerbotAI::UpdateAIInternal` — `PlayerbotAI.cpp:1140-1161`
   — under the same mutex, with not-yet-due replies re-queued.
-* `TellPlayer` / `TellPlayerNoFacing` (`PlayerbotAI.cpp:3632` / `3474`) are the
+* `TellPlayer` / `TellPlayerNoFacing` (`PlayerbotAI.cpp:3669` / `3511`) are the
   immediate, on-tick variants used by actions.
 
 **This queue+mutex+tick-drain triple is the pattern the AI stream copies.** It
 is the codebase's own established answer to "a non-world thread needs to hand
 work to a bot."
 
-### 2.7 The LLM interface **[IN TREE]**
+### 2.7 The LLM interface **[PRE-EXISTING]**
 
 `PlayerbotLLMInterface` (`PlayerbotLLMInterface.h/.cpp`) is a *separate,
 outbound* system: the bot builds a prompt and calls out to an LLM endpoint for
@@ -223,7 +241,7 @@ intents. Two pieces are directly reusable by the stream layer:
 * `ParseResponse(...)` / `LimitContext(...)` — prompt/response handling, useful
   if snapshot text ever needs truncation.
 
-### 2.8 Threading model **[IN TREE — and the thing to be careful about]**
+### 2.8 Threading model **[PRE-EXISTING — and the thing to be careful about]**
 
 | Runs on | What |
 |---|---|
@@ -238,10 +256,11 @@ logs out mid-read). The design in §3 does not extend that pattern.
 
 ---
 
-## 3. Layer 1 — the AI Stream Interface **[DESIGNED]**
+## 3. Layer 1 — the AI Stream Interface **[NEW]**
 
-Everything in this section is specified and not yet implemented. Full rationale
-in [`AI_STREAM_INTERFACE.md`](AI_STREAM_INTERFACE.md).
+Implemented in `PlayerbotAI.h` / `PlayerbotAI.cpp`, plus one line in
+`RandomPlayerbotMgr.cpp`. Full rationale in
+[`AI_STREAM_INTERFACE.md`](AI_STREAM_INTERFACE.md).
 
 ### 3.1 Control model: *nudge*, not *drive*
 
@@ -262,8 +281,8 @@ Every message is a line `"<verb> <args>,<guid>"` on the existing port.
 
 | Verb | Response | Effect |
 |---|---|---|
-| `claim` | `ok` | Sets `aiControlled = true` for this bot: snapshot rebuilding and event buffering switch on **for this bot only**. |
-| `release` | `ok` | Clears the flag, drops buffers. Bot carries on autonomously. |
+| `claim` | `ok` | Sets `aiControlled = true` for this bot: snapshot rebuilding and event buffering switch on **for this bot only**. Clears any stale buffers, so re-claiming is a clean reset. |
+| `release` | `ok` | Clears the flag and drops all three buffers. The bot carries on autonomously — it never stopped. |
 
 **Read**
 
@@ -276,12 +295,30 @@ Every message is a line `"<verb> <args>,<guid>"` on the existing port.
 
 | Verb | Response | Semantics |
 |---|---|---|
-| `intent <command>` | `ok` | Strips `intent `, enqueues the remainder, returns immediately. Execution happens on the next tick. **`ok` means accepted, not performed.** |
+| `intent <command>` | `ok` | Strips `intent `, trims, enqueues the remainder, returns immediately. Execution happens on the next tick. **`ok` means accepted, not performed.** |
+
+**Error responses.** Anything that can be detected at enqueue time is reported
+as single-line JSON rather than `ok`:
+
+| Response | Cause |
+|---|---|
+| `{"error":"not claimed"}` | `snapshot`, `events` or `intent` on a bot that has not been claimed. |
+| `{"error":"no snapshot yet"}` | Claimed, but the bot has not ticked since. Poll again. |
+| `{"error":"empty intent"}` | `intent` with nothing after the verb. |
+| `{"error":"intent queue full"}` | More than 64 intents queued and undrained. |
+
+Anything not detectable at enqueue time is not reported at all — see §3.5.
+
+> **Two protocol constraints inherited from §2.2, and they bite hardest here.**
+> The request is split on its **first comma**, so an intent carrying free text
+> must not contain one: `intent whisper Bob sure, be right there,1234` truncates
+> at "sure". And the verbs are reachable **only from the command server** — the
+> in-game `debug` path cannot claim a bot or send it intents (§2.5).
 
 ### 3.3 Read side — the snapshot
 
-Single-line JSON, rebuilt on the bot's tick (throttled, target 1–2s) and cached
-as a string. The socket returns a **copy of that string** under the mutex.
+Single-line JSON, rebuilt on the bot's tick (throttled to 2s) and cached as a
+string. The socket returns a **copy of that string** under the mutex.
 
 ```json
 {
@@ -308,7 +345,18 @@ Design rules baked into the schema:
 
 * **Bands, not numbers.** `hp`/`mana` report `critical` / `low` / `medium` /
   `high`. A strategic reasoner does not need `73%`, and bands keep the LLM from
-  attempting tactical micro-decisions it will do badly.
+  attempting tactical micro-decisions it will do badly. The cut points are the
+  server's own existing thresholds, so they track whatever the operator has
+  tuned: health uses `AiPlayerbot.CriticalHealth` / `LowHealth` / `MediumHealth`
+  (20 / 50 / 70 by default), mana uses `LowMana` / `MediumMana` (15 / 40) with
+  75 as the top of `medium`. A class with no mana bar reports `"mana":"none"`.
+* **Bounded lists.** At most 10 `nearby` NPCs and 40 `group_members`; the quest
+  log is bounded by `MAX_QUEST_LOG_SIZE` already. `nearby` is filtered to NPCs
+  the AI could form an intent about — questgiver, trainer, flightmaster,
+  innkeeper, banker, auctioneer, repair, vendor, spirithealer — because
+  everything else is noise it would have to reason past.
+* **Rebuilt at most every 2 seconds** and cached (`AI_STREAM_SNAPSHOT_INTERVAL`).
+  A poll between rebuilds gets the last one.
 * **`v` from day one.** The schema will grow; consumers pin on `v`.
 * **Additive growth only.** Fields may be added freely; removing or retyping one
   is a `v` bump.
@@ -321,26 +369,51 @@ Design rules baked into the schema:
 
 | `type` | Extra fields | Emitted from |
 |---|---|---|
-| `combat` | — | `PlayerbotAI::ChangeEngine(BOT_STATE_COMBAT)` — `PlayerbotAI.cpp:2003` |
+| `combat` | — | `PlayerbotAI::ChangeEngine(BOT_STATE_COMBAT)` — `PlayerbotAI.cpp:2037` |
 | `non-combat` | — | `ChangeEngine(BOT_STATE_NON_COMBAT)` |
 | `dead` | — | `ChangeEngine(BOT_STATE_DEAD)` |
-| `hp_critical` | `pct` | health-threshold check on tick |
-| `whisper` | `from`, `text` | `HandleCommand`, `CHAT_MSG_WHISPER` — `PlayerbotAI.cpp:1369` |
-| `group_invite` | `from` | party-invite packet handler |
-| `arrived` | `destination` | travel-complete |
-| `level_up` | `level` | level-up hook |
+| `whisper` | `from`, `text` | `HandleCommand` — `PlayerbotAI.cpp:1375` |
+| `group_invite` | `from` | `HandleBotOutgoingPacket`, `SMSG_GROUP_INVITE` — `PlayerbotAI.cpp:1552` |
+| `hp_critical` | `pct` | `CheckAiStateEvents` on tick — `PlayerbotAI.cpp:6676` |
+| `arrived` | `destination` | `CheckAiStateEvents` on tick |
+| `level_up` | `level` | `CheckAiStateEvents` on tick |
 
 `ChangeEngine` is the reason the combat events are three lines of code: it is
 the **single choke point** for every combat/non-combat/dead transition in the
 bot. There is no other place state changes.
+
+The other five are worth a note each:
+
+* **`whisper`** is pushed *before* the security check, so a claimed bot hears
+  strangers, not only players allowed to command it — which is the whole point,
+  since the AI decides for itself whether to answer. Two filters apply: the
+  sender must be a real player and must not be the bot itself, because several
+  actions synthesise commands by calling `HandleCommand` with `CHAT_MSG_WHISPER`
+  on themselves. A whisper containing the command separator is reported once per
+  part by the existing recursion rather than twice.
+* **`group_invite`** reads the inviter from `bot->GetGroupInvite()`, which is
+  already set by the time the packet arrives, rather than parsing the packet
+  body — whose layout differs between client versions.
+* **`level_up`** compares `bot->GetLevel()` on the tick instead of reading
+  `SMSG_LEVELUP_INFO`. Version-independent, and the level reported is always the
+  one the bot actually has.
+* **`arrived`** is the `TRAVEL` → `WORK` edge of the travel target, since the
+  engine's flow is `PREPARE` → `TRAVEL` → `WORK`.
+* **`hp_critical`** is edge-triggered against `AiPlayerbot.CriticalHealth`, so a
+  long fight spent at low health reports once, not once per tick.
+
+On `claim`, the edge detectors are baselined against current state, so the AI is
+not handed a `level_up` or an `arrived` for something that happened before it
+was watching. Health is deliberately **not** baselined: a bot claimed while
+already in trouble reports `hp_critical` on the first poll.
 
 Semantics to hold to:
 
 * **Chronological order** within a poll; the array is the buffer in order.
 * **Destructive read** — a dropped response loses events. Acceptable: the
   snapshot is authoritative for *state*, events are hints about *changes*.
-* **The buffer must be bounded.** An unpolled claimed bot in a long fight would
-  otherwise grow without limit. Cap it and drop oldest (an open item, §6).
+* **The buffer is bounded** at 256 events (`AI_STREAM_MAX_EVENTS`), dropping
+  oldest, so a claimed bot nobody polls cannot grow without limit.
 * Events are appended **on the tick only**, never from the socket thread.
 
 ### 3.5 Write side — the intent router
@@ -359,8 +432,10 @@ ExternalEventHelper::ParseChatCommand("goto Stormwind", <bot as owner>)
 existing trigger → existing action → TravelMgr routes Westfall → Stormwind
 ```
 
-**No new game logic.** The router is ~25 lines: strip prefix, enqueue, drain,
-delegate. The whole existing command vocabulary comes along for free:
+**No new game logic.** The router is `DrainAiIntents`
+(`PlayerbotAI.cpp:6648`) plus one branch in the verb dispatcher: strip prefix,
+enqueue, drain, delegate. The whole existing command vocabulary comes along for
+free:
 
 | Intent | Backed by |
 |---|---|
@@ -376,34 +451,60 @@ delegate. The whole existing command vocabulary comes along for free:
 | `intent strategy +flee` / `-grind` | Strategy toggle |
 
 **The one nuance — permissions.** The normal path checks
-`PlayerbotSecurity::CheckLevelFor(PLAYERBOT_SECURITY_ALLOW_ALL, …)`
-(`PlayerbotSecurity.h:38`) against a `Player* owner`. An injected intent has no
-player behind it. Intents are routed as the bot's master/self and **bypass the
-security-level check** — the AI is trusted server-side, by the same argument
+`PlayerbotSecurity::CheckLevelFor(…)` (`PlayerbotSecurity.h:38`) against a
+`Player* owner`. An injected intent has no player behind it. Intents are routed
+as `master ? master : bot` and go straight to `ParseChatCommand`, **bypassing
+the security-level check** — the AI is trusted server-side, by the same argument
 that makes the command port a server-operator tool rather than a player-facing
 one. Everything else about the pipeline is unchanged.
 
-**Error reporting is deliberately weak.** `ok` acknowledges the enqueue. If
-`ParseChatCommand` finds no matching trigger a tick later, nothing is reported
-back — exactly as an unrecognised whisper command is silently dropped today. The
-AI observes outcomes through the next snapshot, not through the intent's return
-value. This is a conscious trade: it keeps the router stateless and one-way.
+That bypass is exactly why the stream verbs are gated on `fromCommandServer`
+(§2.5). The in-game `debug` path reaches the verb dispatcher *ahead* of the
+security check; if `intent` were reachable from there, any player who can
+whisper a bot could run any command on it with permissions skipped.
+
+**Error reporting past the enqueue is deliberately weak.** `ok` acknowledges
+the enqueue, and the errors in §3.2 cover what is knowable at that moment. If
+`ParseChatCommand` finds no matching trigger a tick later, it is logged at debug
+level and nothing is reported back — exactly as an unrecognised whisper command
+is silently dropped today. The AI observes outcomes through the next snapshot,
+not through the intent's return value. This is a conscious trade: it keeps the
+router stateless and one-way.
 
 ### 3.6 Per-bot state added to `PlayerbotAI`
 
 Mirrors the `chatReplies` + `chatRepliesMutex` pattern already at
-`PlayerbotAI.h:694-696`:
+`PlayerbotAI.h:707-709`. `PlayerbotAI.h:711-726`:
 
 ```cpp
+// Shared with the command-server thread.
+std::atomic<bool>         aiControlled{false};
 std::mutex                aiStreamMutex;
-std::queue<std::string>   aiInboundIntents;   // Python -> bot   (WRITE)
-std::vector<std::string>  aiOutboundEvents;   // bot -> Python   (READ)
+std::queue<std::string>   aiInboundIntents;   // socket -> bot   (WRITE)
+std::vector<std::string>  aiOutboundEvents;   // bot -> socket   (READ)
 std::string               aiSnapshotCache;    // rebuilt on tick (READ)
-bool                      aiControlled = false;
+// Tick-owned edge detection. Never read or written off the tick.
+bool                      aiStreamWasControlled = false;
+time_t                    aiSnapshotTime = 0;
+bool                      aiHealthCritical = false;
+uint8                     aiLastTravelStatus = 0;
+uint32                    aiLastLevel = 0;
 ```
 
+`aiControlled` is atomic rather than mutex-guarded for one reason: it is tested
+on every `ChangeEngine` call for every bot on the server, and taking a lock
+there to learn "no, not claimed" would be a real cost for a pure no-op.
+
+The split matters. The first group crosses the thread boundary and is guarded.
+The second group is **tick-owned**: written and read only from
+`UpdateAiStream`, never from the socket. That is why `claim` does not reset the
+edge detectors itself — it flips `aiControlled`, and the next tick notices the
+transition and baselines them. A socket thread writing `aiLastLevel` would be
+the same race the whole design exists to avoid.
+
 **Every one of these is gated on `aiControlled`.** A server running hundreds of
-autonomous random bots pays one bool test per tick per bot and nothing else.
+autonomous random bots pays one atomic bool test per tick per bot and nothing
+else.
 
 ---
 
@@ -505,40 +606,55 @@ zones, which trainer teaches Warriors, or where he stands.
 
 ---
 
-## 7. Implementation plan **[DESIGNED]**
+## 7. What was built, and where **[NEW]**
 
-**Files touched: `PlayerbotAI.h` and `PlayerbotAI.cpp` only.** No new files, no
-`CMakeLists.txt` change, no new socket, no new thread.
+`PlayerbotAI.h` and `PlayerbotAI.cpp`, plus one line in `RandomPlayerbotMgr.cpp`.
+No new files, no `CMakeLists.txt` change, no new socket, no new thread.
 
-| # | Location | Change | ~LOC |
-|---|---|---|---|
-| 1 | `HandleRemoteCommand` — `PlayerbotAI.cpp:6477` | Add `claim` / `release` / `snapshot` / `events` / `intent …` branches ahead of the existing chain. Reads return mutex-guarded string copies; intents enqueue. | ~50 |
-| 2 | `ChangeEngine(BotState)` — `PlayerbotAI.cpp:2003` | `if (aiControlled) PushAiEvent(...)` at the one state-transition choke point. | ~5 |
-| 3 | `HandleCommands` / `UpdateAIInternal` — `PlayerbotAI.cpp:1095` / `1128` | Drain `aiInboundIntents` under the mutex through `ParseChatCommand`; then, throttled, rebuild `aiSnapshotCache`. **The only place game state is read.** | ~25 |
-| 4 | whisper path (`PlayerbotAI.cpp:1369`), party-invite handler, hp-threshold check | `PushAiEvent(...)` one-liners. | ~10 |
-| 5 | new `BuildSnapshot()` | Serialise already-computed `AI_VALUE`s into one JSON line. | ~60 |
+| Location | Change |
+|---|---|
+| `PlayerbotAI.h:378-380` | `IsAiControlled`, `PushAiEvent`, `UpdateAiStream`; `HandleRemoteCommand` gains `bool fromCommandServer = false` |
+| `PlayerbotAI.h:693-695` | `DrainAiIntents`, `CheckAiStateEvents`, `BuildSnapshot` — private, tick-only |
+| `PlayerbotAI.h:711-726` | The state block in §3.6 |
+| `PlayerbotAI.cpp:6871` | `HandleRemoteCommand`: the five stream verbs, gated on `fromCommandServer`, ahead of the existing chain |
+| `PlayerbotAI.cpp:1165` | `UpdateAIInternal` calls `UpdateAiStream()` after the chat-reply drain and before `DoNextAction`, so an intent takes effect the same tick |
+| `PlayerbotAI.cpp:2037` | `ChangeEngine`: three `PushAiEvent` lines at the state choke point |
+| `PlayerbotAI.cpp:1375` | `HandleCommand`: the `whisper` event, ahead of the security check |
+| `PlayerbotAI.cpp:1552` | `HandleBotOutgoingPacket`: the `group_invite` event |
+| `PlayerbotAI.cpp:6514-6869` | The new block: the `AI_STREAM_*` constants and file-static helpers, then `PushAiEvent`, `UpdateAiStream`, `DrainAiIntents`, `CheckAiStateEvents`, `BuildSnapshot` |
+| `RandomPlayerbotMgr.cpp:4005` | The one caller that is the command server passes `fromCommandServer = true` |
 
-**≈150 lines across 2 files.**
+**How to exercise it.** Set `AiPlayerbot.CommandServerPort`, then, against a
+random bot's GUID:
 
-**Build order** — each step is independently testable, the first two with
-nothing but `telnet`:
+```
+claim,1234          -> ok
+snapshot,1234       -> {"v":1,...}          (or {"error":"no snapshot yet"} for one tick)
+events,1234         -> [] then [{"type":"combat"}] etc.
+intent goto Stormwind,1234  -> ok
+release,1234        -> ok
+```
 
-1. **Read side:** `claim` / `release` / `snapshot` / `events`, plus the
-   `ChangeEngine` combat events. Verifiable by hand immediately.
-2. **Event hooks:** whisper, `group_invite`, `arrived`, `hp_critical`,
-   `level_up`.
-3. **Write side:** the `intent` router, the on-tick drain, the permission
-   bypass.
-4. **`BuildSnapshot`** field by field against §3.3 and §5.
-
----
+`snapshot` and `events` are safe to poll from a plain telnet client: they return
+strings the tick already prepared, so unlike the legacy verbs in §2.3 they read
+no game state at all.
 
 ## 8. Open items
 
-* **Snapshot rebuild throttle** — pick the interval (1–2s). Rebuilding JSON
-  every tick for a claimed bot is wasteful; the AI cannot consume it either.
-* **Event buffer cap** — bound `aiOutboundEvents` and drop oldest on overflow,
-  so a claimed-but-unpolled bot cannot grow memory without limit.
+* **First compile and first live `claim`** — the module builds only against a
+  full CMaNGOS tree, which this repository does not contain, so none of this has
+  been through a compiler. The JSON assembly was tested in isolation; everything
+  else rests on reading the code.
+* **`AI_STREAM_SNAPSHOT_INTERVAL` is a constant, not config.** 2 seconds, chosen
+  so a claimed bot does not rebuild JSON every tick. If it wants tuning per
+  server it needs the usual `PlayerbotAIConfig` plumbing.
+* **Intent free text cannot contain a comma** (§3.2). `intent say` and
+  `intent whisper` are the ones that will hit this. Fixing it means changing how
+  `RandomPlayerbotMgr::HandleRemoteCommand` splits the request — splitting on
+  the *last* comma would do it, at the cost of changing an existing protocol.
+* **`trainable spells` is recalculated every 5s per claimed bot** (the value's
+  own check interval) and walks the global trainable spell map. Fine for a
+  handful of claimed bots; worth measuring before claiming dozens.
 * **Newline-unsafe legacy verbs** — `travel`, `traveldetail`, `budget` (§2.3).
   Leave them for the in-game `debug` path, or add single-line variants.
 * **Security** — the command port is unauthenticated today. Controlling a bot is
@@ -562,15 +678,22 @@ nothing but `telnet`:
 |---|---|---|
 | `PlayerbotCommandServer` | `playerbot/PlayerbotCommandServer.cpp` | TCP listener, thread per connection, newline framing |
 | `RandomPlayerbotMgr::HandleRemoteCommand` | `playerbot/RandomPlayerbotMgr.cpp:3986` | Splits `cmd,guid`, resolves the bot |
-| `PlayerbotAI::HandleRemoteCommand` | `playerbot/PlayerbotAI.cpp:6477` | Per-bot verb dispatcher — the read surface, extended by the stream verbs |
-| `PlayerbotAI::HandleCommand` | `playerbot/PlayerbotAI.cpp:1369` | In-game chat entry point of the write path; whisper event source |
-| `PlayerbotAI::HandleCommands` | `playerbot/PlayerbotAI.cpp:1095` | On-tick drain of queued commands; where intents are drained |
-| `PlayerbotAI::UpdateAIInternal` | `playerbot/PlayerbotAI.cpp:1128` | The bot tick; chat-reply drain; where the snapshot is rebuilt |
-| `PlayerbotAI::ChangeEngine` | `playerbot/PlayerbotAI.cpp:2003` | Sole combat/non-combat/dead transition point → combat events |
-| `PlayerbotAI::QueueChatResponse` | `playerbot/PlayerbotAI.cpp:8492` | Off-tick enqueue + mutex + tick-drain — the pattern being mirrored |
-| `chatCommands` / `chatReplies` / `chatRepliesMutex` | `playerbot/PlayerbotAI.h:694-696` | The existing queues the AI stream state sits beside |
+| `PlayerbotAI::HandleRemoteCommand` | `playerbot/PlayerbotAI.cpp:6871` | Per-bot verb dispatcher — the read surface, extended by the stream verbs; `fromCommandServer` gates them |
+| `PlayerbotAI::HandleCommand` | `playerbot/PlayerbotAI.cpp:1375` | In-game chat entry point of the write path; whisper event source |
+| `PlayerbotAI::HandleCommands` | `playerbot/PlayerbotAI.cpp:1096` | On-tick drain of queued commands; where intents are drained |
+| `PlayerbotAI::UpdateAIInternal` | `playerbot/PlayerbotAI.cpp:1129` | The bot tick; chat-reply drain; where the snapshot is rebuilt |
+| `PlayerbotAI::ChangeEngine` | `playerbot/PlayerbotAI.cpp:2037` | Sole combat/non-combat/dead transition point → combat events |
+| `PlayerbotAI::QueueChatResponse` | `playerbot/PlayerbotAI.cpp:8978` | Off-tick enqueue + mutex + tick-drain — the pattern being mirrored |
+| `chatCommands` / `chatReplies` / `chatRepliesMutex` | `playerbot/PlayerbotAI.h:707-709` | The existing queues the AI stream state sits beside |
 | `ExternalEventHelper::ParseChatCommand` | `playerbot/strategy/ExternalEventHelper.h` | String → trigger resolution; the intent router's target |
 | `PlayerbotSecurity::CheckLevelFor` | `playerbot/PlayerbotSecurity.h:38` | Permission gate the intent path bypasses |
 | `TrainableSpellsValue` | `playerbot/strategy/values/TrainerValues.cpp:111` | Global "what can I train"; location-independent |
 | `PlayerbotLLMInterface` | `playerbot/PlayerbotLLMInterface.cpp` | Existing LLM path; `SanitizeForJson` reused for snapshot text |
 | `commandServerPort` | `playerbot/PlayerbotAIConfig.cpp:277` | `AiPlayerbot.CommandServerPort`, default 0 (off) |
+| `PlayerbotAI::UpdateAiStream` | `playerbot/PlayerbotAI.cpp:6610` | The AI stream's whole tick: baseline on claim, drain, events, throttled snapshot rebuild |
+| `PlayerbotAI::PushAiEvent` | `playerbot/PlayerbotAI.cpp:6597` | Appends one JSON event under the mutex, bounded, no-op unless claimed |
+| `PlayerbotAI::DrainAiIntents` | `playerbot/PlayerbotAI.cpp:6648` | Swaps the intent queue out and runs each through `ParseChatCommand` |
+| `PlayerbotAI::CheckAiStateEvents` | `playerbot/PlayerbotAI.cpp:6676` | Edge detection for `level_up`, `hp_critical` and `arrived` |
+| `PlayerbotAI::BuildSnapshot` | `playerbot/PlayerbotAI.cpp:6736` | Serialises already-computed values into one JSON line |
+| `AI_STREAM_*` constants, `AiJsonString`, `AiHealthBand`, `AiManaBand`, `AiNpcType` | `playerbot/PlayerbotAI.cpp:6522-6595` | Throttle and cap constants, plus the file-static snapshot helpers: escaping, banding, NPC classification |
+| `criticalHealth` / `lowHealth` / `mediumHealth` / `lowMana` / `mediumMana` | `playerbot/PlayerbotAIConfig.cpp:151-156` | The thresholds the snapshot bands and `hp_critical` use |

@@ -1,6 +1,11 @@
 # AI Stream Interface — Design & Reference
 
-**Status:** Design finalized, C++ implementation pending.
+**Status:** Implemented. This document is kept as the **decision record** — why
+the design is shaped this way, the control-model argument, the build order. For
+what is actually in the tree, including the details that only settled during
+implementation, read [`READ_WRITE_SYSTEMS.md`](READ_WRITE_SYSTEMS.md); where the
+two disagree, that one is right.
+
 **Scope:** The C++ (CMaNGOS / playerbot) side of a system that lets an external
 AI process "inhabit" a single playerbot character — receiving the strategic
 data it needs and issuing high-level intents. The Python/AI side is built
@@ -159,6 +164,14 @@ bool aiControlled = false;
 ```
 
 ### 4.2 `PlayerbotAI.cpp` — touch-points
+
+> As built, this came to ~490 lines rather than ~150, and touched one extra
+> line in `RandomPlayerbotMgr.cpp`. The estimate was low mostly on
+> `BuildSnapshot` (~130 lines with the group, quest and nearby-NPC lists) and on
+> four things the design had not accounted for: the `fromCommandServer` gate
+> that keeps the verbs off the in-game `debug` path, JSON error responses,
+> bounded buffers, and the tick-owned edge-detection state.
+
 
 | # | Location | Change | ~LOC |
 |---|---|---|---|

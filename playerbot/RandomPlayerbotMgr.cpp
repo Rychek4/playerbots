@@ -4002,7 +4002,7 @@ std::string RandomPlayerbotMgr::HandleRemoteCommand(std::string request)
     if (!ai)
         return "invalid guid";
 
-    return ai->HandleRemoteCommand(command);
+    return ai->HandleRemoteCommand(command, true);
 }
 
 void RandomPlayerbotMgr::ChangeStrategy(Player* player)
