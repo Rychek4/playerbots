@@ -13,7 +13,10 @@ it.
 
 All of it is in the tree. Line references are against the current branch.
 
-Companion document: [`AI_STREAM_INTERFACE.md`](AI_STREAM_INTERFACE.md) is the
+Companion documents: [`CORE_INTEGRATION.md`](CORE_INTEGRATION.md) is the handoff
+for whoever works the CMaNGOS **core** repository — what the core must do to
+pick this up (almost nothing), the core API surface relied on, and the security
+constraint on the command port. [`AI_STREAM_INTERFACE.md`](AI_STREAM_INTERFACE.md) is the
 *decision record* — why the design is shaped this way, the control model
 argument, the build order. **This** document is the *reference* — the full
 read and write surface, end to end, including everything the engine already
