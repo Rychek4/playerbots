@@ -66,6 +66,7 @@ class RandomPlayerbotMgr : public PlayerbotHolder
             return instance;
         }
 
+        virtual void UpdateAI(uint32 elapsed) override;   // also ticks the narrator bridge
         virtual void UpdateAIInternal(uint32 elapsed, bool minimal = false) override;
 private:
         void ScaleBotActivity();

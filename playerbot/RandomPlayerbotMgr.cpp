@@ -2,6 +2,7 @@
 
 #include "playerbot/playerbot.h"
 #include "playerbot/PlayerbotAIConfig.h"
+#include "playerbot/bridge/Bridge.h"
 #include "playerbot/PlayerbotFactory.h"
 #include "strategy/values/LastMovementValue.h"
 #include "Accounts/AccountMgr.h"
@@ -637,6 +638,14 @@ void RandomPlayerbotMgr::LogPlayerLocation()
             }
         }
     }
+}
+
+void RandomPlayerbotMgr::UpdateAI(uint32 elapsed)
+{
+    // World thread, before the maps update: the bridge drains its command
+    // queue and takes scene snapshots here.
+    sBridge.Update(elapsed);
+    PlayerbotAIBase::UpdateAI(elapsed);
 }
 
 void RandomPlayerbotMgr::UpdateAIInternal(uint32 elapsed, bool minimal)

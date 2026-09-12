@@ -1,5 +1,6 @@
 #include "playerbot/playerbot.h"
 #include "playerbot/PlayerbotAIConfig.h"
+#include "playerbot/bridge/Bridge.h"
 #include "PlayerbotDbStore.h"
 #include "playerbot/PlayerbotFactory.h"
 #include "playerbot/RandomPlayerbotFactory.h"
@@ -1002,6 +1003,8 @@ void PlayerbotMgr::HandleCommand(uint32 type, const std::string& text, uint32 la
 
 void PlayerbotMgr::HandleMasterIncomingPacket(const WorldPacket& packet)
 {
+    sBridge.OnMasterPacket(master, packet);
+
     ForEachPlayerbot([&](Player* bot)
     {
         bot->GetPlayerbotAI()->HandleMasterIncomingPacket(packet);

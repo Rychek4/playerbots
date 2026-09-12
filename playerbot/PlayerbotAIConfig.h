@@ -392,6 +392,14 @@ public:
     std::vector<worldBuff> worldBuffs;
 
     int commandServerPort;
+
+    // Narrator bridge (playerbot/bridge). See PROTOCOL.md in Azeroth_Narrator.
+    int bridgePort;
+    std::string bridgeBindIp;
+    int bridgeSnapshotInterval;
+    float bridgeSceneRadius;
+    int bridgeMaxClients;
+
     bool perfMonEnabled;
     bool bExplicitDbStoreSave = false;
 

@@ -968,6 +968,19 @@ AiPlayerbot.UseKnockback = 1
 # Command server port, 0 - disabled
 #AiPlayerbot.CommandServerPort = 8888
 
+# Narrator bridge: newline-delimited JSON over TCP for an external control center
+# (game events out, scoped bot and NPC commands in). Successor of the command
+# server above. See PROTOCOL.md in the Azeroth_Narrator repository. 0 - disabled
+#AiPlayerbot.Bridge.Port = 8890
+# Address to listen on. Keep it local unless the control center runs elsewhere.
+#AiPlayerbot.Bridge.BindIp = 127.0.0.1
+# Milliseconds between scene snapshots (party state and nearby units)
+#AiPlayerbot.Bridge.SnapshotInterval = 2000
+# Radius in yards around each real player that counts as nearby in a scene
+#AiPlayerbot.Bridge.SceneRadius = 40
+# Maximum simultaneous bridge clients
+#AiPlayerbot.Bridge.MaxClients = 4
+
 AiPlayerbot.PerfMonEnabled = 0
 
 

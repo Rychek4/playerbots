@@ -1,5 +1,6 @@
 #include "PlayerbotMgr.h"
 #include "playerbot/playerbot.h"
+#include "playerbot/bridge/Bridge.h"
 #include <stdarg.h>
 #include <iomanip>
 
@@ -1531,6 +1532,8 @@ void PlayerbotAI::HandleCommand(uint32 type, const std::string& text, Player& fr
 
 void PlayerbotAI::HandleBotOutgoingPacket(const WorldPacket& packet)
 {
+    sBridge.OnBotPacket(bot, packet);
+
     //if (packet.empty())
     //    return;
 

@@ -1,6 +1,7 @@
 
 #include "playerbot/PlayerbotAIConfig.h"
 #include "playerbot/playerbot.h"
+#include "playerbot/bridge/Bridge.h"
 #include "RandomPlayerbotFactory.h"
 #include "Accounts/AccountMgr.h"
 #include "playerbot/PlayerbotFactory.h"
@@ -275,6 +276,13 @@ bool PlayerbotAIConfig::Initialize()
     commandSeparator = config.GetStringDefault("AiPlayerbot.CommandSeparator", "\\\\");
 
     commandServerPort = config.GetIntDefault("AiPlayerbot.CommandServerPort", 0);
+
+    bridgePort = config.GetIntDefault("AiPlayerbot.Bridge.Port", 0);
+    bridgeBindIp = config.GetStringDefault("AiPlayerbot.Bridge.BindIp", "127.0.0.1");
+    bridgeSnapshotInterval = config.GetIntDefault("AiPlayerbot.Bridge.SnapshotInterval", 2000);
+    bridgeSceneRadius = config.GetFloatDefault("AiPlayerbot.Bridge.SceneRadius", 40.0f);
+    bridgeMaxClients = config.GetIntDefault("AiPlayerbot.Bridge.MaxClients", 4);
+
     perfMonEnabled = config.GetBoolDefault("AiPlayerbot.PerfMonEnabled", false);
     bExplicitDbStoreSave = config.GetBoolDefault("AiPlayerbot.ExplicitDbStoreSave", false);
 
@@ -825,6 +833,8 @@ bool PlayerbotAIConfig::Initialize()
     sLog.outString("        AI Playerbot initialized       ");
     sLog.outString("---------------------------------------");
     sLog.outString();
+
+    sBridge.Start();
 
     return true;
 }
