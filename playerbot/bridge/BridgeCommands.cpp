@@ -3,14 +3,16 @@
 // returns its result, or std::nullopt when it will reply later itself.
 //
 // Deliberately absent: a way to run server console commands from the socket.
-// Those levers (weather, spawning, mail) stay behind SOAP, which requires a
-// GM account and password; the bridge only exposes scoped game actions.
+// The bridge exposes scoped game actions instead: a line spoken as a player, a
+// bot from the random-bot roster logged in and placed near someone, the weather
+// in one zone. Nothing here takes a command string for the server.
 
 #include "playerbot/bridge/Bridge.h"
 
 #include "playerbot/PlayerbotAI.h"
 #include "playerbot/PlayerbotAIConfig.h"
 #include "playerbot/PlayerbotMgr.h"
+#include "playerbot/RandomPlayerbotMgr.h"
 #include "playerbot/playerbot.h"
 
 #include "Entities/Creature.h"
@@ -19,8 +21,17 @@
 #include "Globals/ObjectMgr.h"
 #include "Maps/Map.h"
 #include "Maps/MapManager.h"
+#include "Database/DatabaseEnv.h"
+#include "Server/DBCStores.h"
+#include "Server/DBCStructure.h"
+#include "Server/Opcodes.h"
+#include "Server/WorldPacket.h"
+#include "Server/WorldSession.h"
 
+#include <cmath>
+#include <cstring>
 #include <memory>
+#include <sstream>
 
 namespace
 {
@@ -274,4 +285,383 @@ std::optional<Json> Bridge::CmdSceneGet(const BridgeInbound&, const Json& args)
         center = reals.front();
     }
     return BuildScene(center);
+}
+
+// Cast --------------------------------------------------------------------------
+//
+// Bots as the control center's cast: pick a character from the random-bot
+// roster, log it in, place it near a player, hold it still, let it speak
+// (bot.say) and log it out again. Login is asynchronous in the core, so
+// bot.login only queues the character load and the bot.login event says when
+// it stands in the world. Logout is immediate.
+
+namespace
+{
+    uint32 OptionalUnsigned(const Json& args, const char* key, uint32 fallback)
+    {
+        if (!args.contains(key) || args[key].is_null())
+            return fallback;
+        if (!args[key].is_number_unsigned())
+            throw BridgeCommandError(std::string("argument '") + key + "' must be an unsigned integer");
+        return args[key].get<uint32>();
+    }
+
+    double OptionalNumber(const Json& args, const char* key, double fallback)
+    {
+        if (!args.contains(key) || args[key].is_null())
+            return fallback;
+        if (!args[key].is_number())
+            throw BridgeCommandError(std::string("argument '") + key + "' must be a number");
+        return args[key].get<double>();
+    }
+
+    double RequireNumber(const Json& args, const char* key)
+    {
+        if (!args.contains(key) || !args[key].is_number())
+            throw BridgeCommandError(std::string("argument '") + key + "' must be a number");
+        return args[key].get<double>();
+    }
+
+    bool OptionalBool(const Json& args, const char* key, bool fallback)
+    {
+        if (!args.contains(key) || args[key].is_null())
+            return fallback;
+        if (!args[key].is_boolean())
+            throw BridgeCommandError(std::string("argument '") + key + "' must be true or false");
+        return args[key].get<bool>();
+    }
+
+    bool SameName(const std::string& a, const char* b)
+    {
+        if (!b || a.size() != std::strlen(b))
+            return false;
+        for (size_t i = 0; i < a.size(); ++i)
+            if (std::tolower(uint8(a[i])) != std::tolower(uint8(b[i])))
+                return false;
+        return true;
+    }
+
+    // A race or class given by id or by its DBC name ("Night Elf", "warrior").
+    uint32 RaceId(const Json& value)
+    {
+        if (value.is_number_unsigned())
+            return value.get<uint32>();
+        if (value.is_string())
+            for (uint32 i = 0; i < sChrRacesStore.GetNumRows(); ++i)
+                if (ChrRacesEntry const* entry = sChrRacesStore.LookupEntry(i))
+                    if (SameName(value.get<std::string>(), entry->name[0]))
+                        return i;
+        throw BridgeCommandError("unknown race");
+    }
+
+    uint32 ClassId(const Json& value)
+    {
+        if (value.is_number_unsigned())
+            return value.get<uint32>();
+        if (value.is_string())
+            for (uint32 i = 0; i < sChrClassesStore.GetNumRows(); ++i)
+                if (ChrClassesEntry const* entry = sChrClassesStore.LookupEntry(i))
+                    if (SameName(value.get<std::string>(), entry->name[0]))
+                        return i;
+        throw BridgeCommandError("unknown class");
+    }
+
+    std::string RacesOfTeam(Team team)
+    {
+        std::ostringstream list;
+        for (uint32 i = 0; i < sChrRacesStore.GetNumRows(); ++i)
+            if (sChrRacesStore.LookupEntry(i) && Player::TeamForRace(uint8(i)) == team)
+                list << (list.tellp() > 0 ? "," : "") << i;
+        return list.str();
+    }
+
+    BotState StateFor(const std::string& name)
+    {
+        if (name == "combat" || name == "co")
+            return BotState::BOT_STATE_COMBAT;
+        if (name == "non combat" || name == "nc")
+            return BotState::BOT_STATE_NON_COMBAT;
+        if (name == "dead")
+            return BotState::BOT_STATE_DEAD;
+        if (name == "reaction" || name == "react")
+            return BotState::BOT_STATE_REACTION;
+        if (name == "all")
+            return BotState::BOT_STATE_ALL;
+        throw BridgeCommandError("unknown state '" + name + "' (combat, non combat, dead, reaction, all)");
+    }
+}
+
+std::optional<Json> Bridge::CmdBotRoster(const BridgeInbound&, const Json& args)
+{
+    std::list<uint32> const& accounts = sPlayerbotAIConfig.randomBotAccounts;
+    if (accounts.empty())
+        throw BridgeCommandError("no random bot accounts exist; the module creates them on first start");
+
+    std::ostringstream where;
+    where << "account IN (";
+    for (auto it = accounts.begin(); it != accounts.end(); ++it)
+        where << (it == accounts.begin() ? "" : ",") << *it;
+    where << ")";
+    if (uint32 minLevel = OptionalUnsigned(args, "level_min", 0))
+        where << " AND level >= " << minLevel;
+    if (uint32 maxLevel = OptionalUnsigned(args, "level_max", 0))
+        where << " AND level <= " << maxLevel;
+    if (args.contains("race") && !args["race"].is_null())
+        where << " AND race = " << RaceId(args["race"]);
+    if (args.contains("class") && !args["class"].is_null())
+        where << " AND class = " << ClassId(args["class"]);
+    const std::string team = OptionalString(args, "team");
+    if (team == "alliance" || team == "horde")
+        where << " AND race IN (" << RacesOfTeam(team == "alliance" ? ALLIANCE : HORDE) << ")";
+    else if (!team.empty())
+        throw BridgeCommandError("argument 'team' must be alliance or horde");
+    if (args.contains("online") && !args["online"].is_null())
+        where << " AND online = " << (OptionalBool(args, "online", false) ? 1 : 0);
+    const uint32 limit = std::min(std::max(OptionalUnsigned(args, "limit", 50), 1u), 200u);
+
+    // One synchronous read, the way the module reads its own bot lists.
+    auto rows = CharacterDatabase.PQuery(
+        "SELECT guid, name, race, class, level, zone, map, online FROM characters WHERE %s ORDER BY RAND() LIMIT %u",
+        where.str().c_str(), limit);
+    Json bots = Json::array();
+    if (rows)
+    {
+        do
+        {
+            Field* fields = rows->Fetch();
+            const uint32 counter = fields[0].GetUInt32();
+            const uint32 race = fields[2].GetUInt8();
+            const uint32 cls = fields[3].GetUInt8();
+            const uint32 zone = fields[5].GetUInt32();
+            Json bot;
+            bot["guid"] = GuidString(ObjectGuid(HIGHGUID_PLAYER, counter));
+            bot["name"] = fields[1].GetCppString();
+            bot["race_id"] = race;
+            bot["class_id"] = cls;
+            bot["level"] = fields[4].GetUInt32();
+            bot["zone"] = zone;
+            bot["map"] = fields[6].GetUInt32();
+            bot["online"] = fields[7].GetUInt8() != 0 || sObjectMgr.GetPlayer(ObjectGuid(HIGHGUID_PLAYER, counter)) != nullptr;
+            if (ChrRacesEntry const* entry = sChrRacesStore.LookupEntry(race))
+                bot["race"] = entry->name[0];
+            if (ChrClassesEntry const* entry = sChrClassesStore.LookupEntry(cls))
+                bot["class"] = entry->name[0];
+            if (AreaTableEntry const* entry = GetAreaEntryByAreaID(zone))
+                bot["zone_name"] = entry->area_name[0];
+            bots.push_back(bot);
+        }
+        while (rows->NextRow());
+    }
+    Json result;
+    result["bots"] = bots;
+    return result;
+}
+
+std::optional<Json> Bridge::CmdBotLogin(const BridgeInbound&, const Json& args)
+{
+    std::string name = RequireString(args, "name");
+    if (!normalizePlayerName(name))
+        throw BridgeCommandError("'" + name + "' is not a valid character name");
+
+    Json result;
+    if (Player* online = FindOnlinePlayer(name))
+    {
+        PlayerbotAI* ai = online->GetPlayerbotAI();
+        if (!ai || ai->IsRealPlayer())
+            throw BridgeCommandError("'" + name + "' is a real player");
+        result["queued"] = false;
+        result["unit"] = PlayerRef(online);
+        return result;
+    }
+
+    const ObjectGuid guid = sObjectMgr.GetPlayerGuidByName(name);
+    if (guid.IsEmpty())
+        throw BridgeCommandError("no character named '" + name + "'");
+    if (!sPlayerbotAIConfig.IsInRandomAccountList(sObjectMgr.GetPlayerAccountIdByGUID(guid)))
+        throw BridgeCommandError("'" + name + "' is not on a random bot account (see bot.roster)");
+
+    // The module's own random-bot login. The character loads asynchronously;
+    // the bot.login event says when it stands in the world.
+    if (!sRandomPlayerbotMgr.LoginRandomBot(guid.GetCounter()))
+        throw BridgeCommandError("the module refused to log in '" + name + "'");
+    result["queued"] = true;
+    result["guid"] = GuidString(guid);
+    result["name"] = name;
+    return result;
+}
+
+std::optional<Json> Bridge::CmdBotLogout(const BridgeInbound&, const Json& args)
+{
+    Player* bot = RequireBot(RequireString(args, "bot"));
+    const uint32 counter = bot->GetGUIDLow();
+    Json result;
+    result["unit"] = PlayerRef(bot);   // built before the player object goes away
+
+    if (sRandomPlayerbotMgr.GetPlayerBot(counter))
+        sRandomPlayerbotMgr.LogoutRandomBot(counter);          // masterless: forget its timers so it can come back later
+    else
+    {
+        Player* master = bot->GetPlayerbotAI()->GetMaster();
+        PlayerbotMgr* mgr = master ? master->GetPlayerbotMgr() : nullptr;
+        if (!mgr || !mgr->GetPlayerBot(counter))
+            throw BridgeCommandError(std::string("no bot holder owns '") + bot->GetName() + "'");
+        mgr->LogoutPlayerBot(counter);
+    }
+    return result;
+}
+
+std::optional<Json> Bridge::CmdBotPlace(const BridgeInbound&, const Json& args)
+{
+    Player* bot = RequireBot(RequireString(args, "bot"));
+    uint32 map;
+    float x, y, z, o;
+
+    const std::string nearName = OptionalString(args, "near");
+    if (!nearName.empty())
+    {
+        Player* anchor = RequireOnlinePlayer(nearName, "near");
+        const float distance = float(OptionalNumber(args, "distance", 4.0));
+        const float angle = float(OptionalNumber(args, "angle", 0.0)) * M_PI_F / 180.0f;   // from where the anchor faces; 0 = in front
+        anchor->GetClosePoint(x, y, z, bot->GetObjectBoundingRadius(), distance, angle, bot);
+        map = anchor->GetMapId();
+        o = MapManager::NormalizeOrientation(std::atan2(anchor->GetPositionY() - y, anchor->GetPositionX() - x));   // facing the anchor
+    }
+    else
+    {
+        map = OptionalUnsigned(args, "map", bot->GetMapId());
+        x = float(RequireNumber(args, "x"));
+        y = float(RequireNumber(args, "y"));
+        z = float(RequireNumber(args, "z"));
+        o = float(OptionalNumber(args, "o", bot->GetOrientation()));
+        if (!MapManager::IsValidMapCoord(map, x, y, z, o))
+            throw BridgeCommandError("not a valid position");
+    }
+
+    if (!bot->TeleportTo(map, x, y, z, o))
+        throw BridgeCommandError("the server refused the teleport");
+
+    Json pos;
+    pos["map"] = map;
+    pos["x"] = x;
+    pos["y"] = y;
+    pos["z"] = z;
+    pos["o"] = o;
+    Json result;
+    result["unit"] = PlayerRef(bot);
+    result["map"] = map;
+    result["pos"] = pos;
+    return result;
+}
+
+std::optional<Json> Bridge::CmdBotStrategy(const BridgeInbound&, const Json& args)
+{
+    Player* bot = RequireBot(RequireString(args, "bot"));
+    PlayerbotAI* ai = bot->GetPlayerbotAI();
+    const std::string change = OptionalString(args, "change");
+    if (!change.empty())
+        ai->ChangeStrategy(change, StateFor(OptionalString(args, "state", "non combat")));   // "+stay,-rpg" and so on
+
+    static const std::pair<const char*, BotState> states[] = {
+        {"combat", BotState::BOT_STATE_COMBAT},
+        {"non combat", BotState::BOT_STATE_NON_COMBAT},
+        {"dead", BotState::BOT_STATE_DEAD},
+        {"reaction", BotState::BOT_STATE_REACTION},
+    };
+    Json strategies;
+    for (auto const& entry : states)
+    {
+        Json list = Json::array();
+        for (std::string_view name : ai->GetStrategies(entry.second))
+            list.push_back(std::string(name));
+        strategies[entry.first] = list;
+    }
+    Json result;
+    result["unit"] = PlayerRef(bot);
+    result["strategies"] = strategies;
+    return result;
+}
+
+std::optional<Json> Bridge::CmdPlayerSay(const BridgeInbound&, const Json& args)
+{
+    Player* player = RequireOnlinePlayer(RequireString(args, "player"), "player");
+    const std::string text = RequireString(args, "text");
+    const std::string channel = OptionalString(args, "channel", "say");
+    uint32 type;
+    if (channel == "say")          type = CHAT_MSG_SAY;
+    else if (channel == "yell")    type = CHAT_MSG_YELL;
+    else if (channel == "emote")   type = CHAT_MSG_EMOTE;
+    else if (channel == "party")   type = CHAT_MSG_PARTY;
+    else if (channel == "raid")    type = CHAT_MSG_RAID;
+    else if (channel == "guild")   type = CHAT_MSG_GUILD;
+    else if (channel == "whisper") type = CHAT_MSG_WHISPER;
+    else
+        throw BridgeCommandError("unknown channel '" + channel + "' (say, yell, emote, party, raid, guild, whisper)");
+
+    // The line enters the player's session as if typed in the client: the
+    // chat handler, the bots' command parsing and the bridge's own chat event
+    // all follow on the session's next update.
+    WorldPacket packet(CMSG_MESSAGECHAT);
+    packet << uint32(type) << uint32(LANG_UNIVERSAL);
+    if (type == CHAT_MSG_WHISPER)
+        packet << RequireString(args, "to");
+    packet << text;
+    player->GetSession()->QueuePacket(std::unique_ptr<WorldPacket>(new WorldPacket(packet)));
+
+    Json result;
+    result["queued"] = true;
+    return result;
+}
+
+std::optional<Json> Bridge::CmdWeather(const BridgeInbound&, const Json& args)
+{
+    const std::string typeName = OptionalString(args, "type", "fine");
+    WeatherType type;
+    if (typeName == "fine")       type = WEATHER_TYPE_FINE;
+    else if (typeName == "rain")  type = WEATHER_TYPE_RAIN;
+    else if (typeName == "snow")  type = WEATHER_TYPE_SNOW;
+    else if (typeName == "storm") type = WEATHER_TYPE_STORM;
+    else
+        throw BridgeCommandError("unknown weather '" + typeName + "' (fine, rain, snow, storm)");
+    const float grade = float(std::min(std::max(OptionalNumber(args, "grade", type == WEATHER_TYPE_FINE ? 0.0 : 0.5), 0.0), 1.0));
+    const bool permanent = OptionalBool(args, "permanent", false);
+
+    Map* map = nullptr;
+    uint32 zone = 0;
+    if (args.contains("zone") && !args["zone"].is_null())
+    {
+        zone = OptionalUnsigned(args, "zone", 0);
+        map = sMapMgr.FindMap(OptionalUnsigned(args, "map", 0), OptionalUnsigned(args, "instance", 0));
+        if (!map)
+            throw BridgeCommandError("that map is not loaded");
+    }
+    else
+    {
+        const std::string playerName = OptionalString(args, "player");
+        Player* player = nullptr;
+        if (!playerName.empty())
+            player = RequireOnlinePlayer(playerName, "player");
+        else
+        {
+            std::vector<Player*> reals = RealPlayersOnline();
+            if (reals.empty())
+                throw BridgeCommandError("no real player is online; pass 'player', or 'map' and 'zone'");
+            player = reals.front();
+        }
+        map = player->GetMap();
+        zone = player->GetZoneId();
+    }
+
+    // The core's own zone weather: everyone in that zone on this map sees the
+    // change at once. Unless permanent, the regular weather cycle resumes later.
+    map->SetWeather(zone, type, grade, permanent);
+
+    Json result;
+    result["map"] = map->GetId();
+    result["zone"] = zone;
+    if (AreaTableEntry const* entry = GetAreaEntryByAreaID(zone))
+        result["zone_name"] = entry->area_name[0];
+    result["type"] = typeName;
+    result["grade"] = grade;
+    result["permanent"] = permanent;
+    return result;
 }

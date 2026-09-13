@@ -161,6 +161,14 @@ private:
     std::optional<Json> CmdNpcSay(const BridgeInbound& in, const Json& args);
     std::optional<Json> CmdNpcEmote(const BridgeInbound& in, const Json& args);
     std::optional<Json> CmdSceneGet(const BridgeInbound& in, const Json& args);
+    // Cast (BridgeCommands.cpp): bots the control center logs in, places and dismisses
+    std::optional<Json> CmdBotRoster(const BridgeInbound& in, const Json& args);
+    std::optional<Json> CmdBotLogin(const BridgeInbound& in, const Json& args);
+    std::optional<Json> CmdBotLogout(const BridgeInbound& in, const Json& args);
+    std::optional<Json> CmdBotPlace(const BridgeInbound& in, const Json& args);
+    std::optional<Json> CmdBotStrategy(const BridgeInbound& in, const Json& args);
+    std::optional<Json> CmdPlayerSay(const BridgeInbound& in, const Json& args);
+    std::optional<Json> CmdWeather(const BridgeInbound& in, const Json& args);
 
     // Command helpers
     static Player* FindOnlinePlayer(const std::string& name);

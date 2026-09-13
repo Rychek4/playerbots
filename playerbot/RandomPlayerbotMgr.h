@@ -146,6 +146,9 @@ public:
         static InventoryResult CanEquipUnseenItem(Player* player, uint8 slot, uint16& dest, uint32 item);
 
         bool AddRandomBot(uint32 bot);
+        // Bridge: one random bot logged in or out on request, outside the module's own scheduling.
+        bool LoginRandomBot(uint32 bot);
+        void LogoutRandomBot(uint32 bot);
         bool CreateRandomBot(const std::string& name, uint8 race, uint8 cls, uint32 level);
         bool DeleteRandomBot(ObjectGuid guid);
         virtual void MovePlayerBot(uint32 guid, PlayerbotHolder* newHolder) override;

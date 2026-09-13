@@ -2168,6 +2168,25 @@ bool RandomPlayerbotMgr::AddRandomBot(uint32 bot)
     return true;
 }
 
+bool RandomPlayerbotMgr::LoginRandomBot(uint32 bot)
+{
+    // "login" means "logging in right now"; ProcessBot clears it once it sees the
+    // bot in the world. A bot logged out before that leaves the flag behind, and
+    // AddRandomBot would then do nothing, so clear it for a bot that is offline.
+    if (!GetPlayerBot(bot) && GetEventValue(bot, "login"))
+        SetEventValue(bot, "login", 0, 0);
+    return AddRandomBot(bot);
+}
+
+void RandomPlayerbotMgr::LogoutRandomBot(uint32 bot)
+{
+    // The same bookkeeping ProcessBot does when it logs a bot out, done now.
+    currentBots.remove(bot);
+    SetEventValue(bot, "add", 0, 0);
+    SetEventValue(bot, "login", 0, 0);
+    LogoutPlayerBot(bot);
+}
+
 void RandomPlayerbotMgr::MovePlayerBot(uint32 guid, PlayerbotHolder* newHolder)
 {
     if (!sPlayerbotAIConfig.enabled)

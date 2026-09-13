@@ -28,6 +28,13 @@ Bridge::Bridge()
     handlers_["npc.say"] = &Bridge::CmdNpcSay;
     handlers_["npc.emote"] = &Bridge::CmdNpcEmote;
     handlers_["scene.get"] = &Bridge::CmdSceneGet;
+    handlers_["bot.roster"] = &Bridge::CmdBotRoster;
+    handlers_["bot.login"] = &Bridge::CmdBotLogin;
+    handlers_["bot.logout"] = &Bridge::CmdBotLogout;
+    handlers_["bot.place"] = &Bridge::CmdBotPlace;
+    handlers_["bot.strategy"] = &Bridge::CmdBotStrategy;
+    handlers_["player.say"] = &Bridge::CmdPlayerSay;
+    handlers_["weather"] = &Bridge::CmdWeather;
 }
 
 Bridge::~Bridge()
