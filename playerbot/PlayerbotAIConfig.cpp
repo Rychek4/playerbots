@@ -279,7 +279,8 @@ bool PlayerbotAIConfig::Initialize()
 
     bridgePort = config.GetIntDefault("AiPlayerbot.Bridge.Port", 0);
     bridgeBindIp = config.GetStringDefault("AiPlayerbot.Bridge.BindIp", "127.0.0.1");
-    bridgeSnapshotInterval = config.GetIntDefault("AiPlayerbot.Bridge.SnapshotInterval", 2000);
+    bridgeSnapshotInterval = config.GetIntDefault("AiPlayerbot.Bridge.SnapshotInterval", 30000);
+    bridgeBubbleInterval = config.GetIntDefault("AiPlayerbot.Bridge.BubbleInterval", 500);
     bridgeSceneRadius = config.GetFloatDefault("AiPlayerbot.Bridge.SceneRadius", 40.0f);
     bridgeMaxClients = config.GetIntDefault("AiPlayerbot.Bridge.MaxClients", 4);
 

@@ -70,9 +70,14 @@ void Bridge::Start()
 void Bridge::Stop()
 {
     server_.Stop();
+    ForgetTracking();
+}
+
+void Bridge::ForgetTracking()
+{
     tracked_.clear();
-    botsOnline_.clear();
     groupSignature_.clear();
+    bubble_.clear();
 }
 
 // Tick -----------------------------------------------------------------------
@@ -84,14 +89,42 @@ void Bridge::Update(uint32 diff)
 
     DrainCommands();
 
+    const bool haveClients = server_.ClientCount() > 0;
+    if (!haveClients)
+    {
+        if (hadClients_)
+            ForgetTracking();   // a client that connects later starts from a clean baseline
+        hadClients_ = false;
+        snapshotTimer_ += diff;
+        if (snapshotTimer_ >= 30000)
+        {
+            snapshotTimer_ = 0;
+            ExpireDuplicates(WorldTimer::getMSTime());
+        }
+        return;
+    }
+    const bool justConnected = !hadClients_;
+    hadClients_ = true;
+
+    Watch();   // cheap field reads for a handful of players; emits on the tick a change happens
+
+    bubbleTimer_ += diff;
+    const uint32 bubbleInterval = sPlayerbotAIConfig.bridgeBubbleInterval > 0 ? uint32(sPlayerbotAIConfig.bridgeBubbleInterval) : 500u;
+    if (bubbleTimer_ >= bubbleInterval)
+    {
+        bubbleTimer_ = 0;
+        BubbleScan();
+    }
+
     snapshotTimer_ += diff;
-    const uint32 interval = sPlayerbotAIConfig.bridgeSnapshotInterval > 0 ? uint32(sPlayerbotAIConfig.bridgeSnapshotInterval) : 2000u;
-    if (snapshotTimer_ >= interval)
+    const uint32 snapshotInterval = sPlayerbotAIConfig.bridgeSnapshotInterval > 0 ? uint32(sPlayerbotAIConfig.bridgeSnapshotInterval) : 30000u;
+    if (justConnected)
+        snapshotTimer_ = snapshotInterval;   // the first client gets a full picture at once, not in 30 s
+    if (snapshotTimer_ >= snapshotInterval)
     {
         snapshotTimer_ = 0;
         ExpireDuplicates(WorldTimer::getMSTime());
-        if (server_.ClientCount() > 0)
-            Snapshot();
+        Snapshot();
     }
 }
 

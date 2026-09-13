@@ -278,12 +278,12 @@ Json Bridge::BuildScene(Player* center)
     return scene;
 }
 
-// Snapshot and transitions ----------------------------------------------------
+// Transitions, bubble and reconciliation ------------------------------------------
 
-void Bridge::Snapshot()
+std::vector<Player*> Bridge::TrackedParty(std::vector<Player*>* reals)
 {
-    std::vector<Player*> reals;
-    std::map<ObjectGuid, Player*> bots;
+    std::vector<Player*> members;
+    std::set<ObjectGuid> seen;
     for (auto const& entry : sObjectAccessor.GetPlayers())
     {
         Player* player = entry.second;
@@ -291,157 +291,275 @@ void Bridge::Snapshot()
             continue;
         PlayerbotAI* ai = player->GetPlayerbotAI();
         if (ai && !ai->IsRealPlayer())
-            bots[player->GetObjectGuid()] = player;
-        else
-            reals.push_back(player);
-    }
-
-    // Bot logins and logouts, by comparing with the previous snapshot.
-    for (auto const& entry : bots)
-    {
-        if (botsOnline_.count(entry.first))
             continue;
-        Json data;
-        data["bot"] = PlayerRef(entry.second);
-        Player* master = entry.second->GetPlayerbotAI()->GetMaster();
-        data["master"] = master ? PlayerRef(master) : Json(nullptr);
-        Emit(EV_BOT_LOGIN, data);
+        if (reals)
+            reals->push_back(player);
+        if (Group* group = player->GetGroup())
+        {
+            for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+                if (Player* member = ref->getSource())
+                    if (member->IsInWorld() && seen.insert(member->GetObjectGuid()).second)
+                        members.push_back(member);
+        }
+        else if (seen.insert(player->GetObjectGuid()).second)
+            members.push_back(player);
     }
-    for (auto const& entry : botsOnline_)
-    {
-        if (bots.count(entry.first))
-            continue;
-        Json data;
-        data["guid"] = GuidString(entry.first);
-        data["name"] = entry.second;
-        Emit(EV_BOT_LOGOUT, data);
-    }
-    botsOnline_.clear();
-    for (auto const& entry : bots)
-        botsOnline_[entry.first] = entry.second->GetName();
+    return members;
+}
 
-    // One scene per real player, plus transitions for everyone in their party.
+// Every world tick: cached field reads for everyone in a real player's party.
+// A change is emitted on the tick it is seen, with what the game can say about why.
+void Bridge::Watch()
+{
+    std::vector<Player*> reals;
+    std::vector<Player*> members = TrackedParty(&reals);
+
     std::set<ObjectGuid> seen;
+    for (Player* member : members)
+    {
+        seen.insert(member->GetObjectGuid());
+        WatchMember(member);
+    }
+    for (auto it = tracked_.begin(); it != tracked_.end();)
+        it = seen.count(it->first) ? std::next(it) : tracked_.erase(it);
+
     std::set<ObjectGuid> realsSeen;
     for (Player* real : reals)
     {
         realsSeen.insert(real->GetObjectGuid());
-
-        std::vector<Player*> members;
-        std::string signature;
-        Group* group = real->GetGroup();
-        if (group)
-        {
-            signature = GuidString(group->GetLeaderGuid());
-            std::vector<std::string> ids;
-            for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
-            {
-                if (Player* member = ref->getSource())
-                {
-                    ids.push_back(GuidString(member->GetObjectGuid()));
-                    if (member->IsInWorld())
-                        members.push_back(member);
-                }
-            }
-            std::sort(ids.begin(), ids.end());
-            for (std::string const& id : ids)
-                signature += "," + id;
-        }
-        else
-            members.push_back(real);
-
-        std::string& last = groupSignature_[real->GetObjectGuid()];
-        if (last != signature)
-        {
-            const bool first = last.empty();
-            last = signature;
-            if (!first || group)   // a lone player's first snapshot is not a change
-            {
-                Json data;
-                data["player"] = PlayerRef(real);
-                data["leader"] = group ? Json(GuidString(group->GetLeaderGuid())) : Json(nullptr);
-                Json list = Json::array();
-                for (Player* member : members)
-                    list.push_back(PlayerRef(member));
-                data["members"] = list;
-                Emit(EV_GROUP_CHANGED, data);
-            }
-        }
-
-        for (Player* member : members)
-            if (seen.insert(member->GetObjectGuid()).second)
-                TrackTransitions(member);
-
-        Emit(EV_SCENE, BuildScene(real));
+        WatchGroup(real);
     }
-
-    for (auto it = tracked_.begin(); it != tracked_.end();)
-        it = seen.count(it->first) ? std::next(it) : tracked_.erase(it);
     for (auto it = groupSignature_.begin(); it != groupSignature_.end();)
         it = realsSeen.count(it->first) ? std::next(it) : groupSignature_.erase(it);
+    for (auto it = bubble_.begin(); it != bubble_.end();)
+        it = realsSeen.count(it->first) ? std::next(it) : bubble_.erase(it);
+    for (auto it = bubbleReady_.begin(); it != bubbleReady_.end();)
+        it = realsSeen.count(*it) ? std::next(it) : bubbleReady_.erase(it);
 }
 
-void Bridge::TrackTransitions(Player* player)
+void Bridge::WatchMember(Player* player)
 {
-    UnitState now;
-    player->GetZoneAndAreaId(now.zone, now.area);
-    now.map = player->GetMapId();
-    now.level = player->GetLevel();
-    now.alive = player->IsAlive();
-    now.inCombat = player->IsInCombat();
-
     auto it = tracked_.find(player->GetObjectGuid());
     if (it == tracked_.end())
     {
-        tracked_[player->GetObjectGuid()] = now;   // first sight: nothing to compare with
+        UnitState first;                                   // first sight is a baseline, not an event
+        first.map = player->GetMapId();
+        player->GetZoneAndAreaId(first.zone, first.area);
+        first.level = player->GetLevel();
+        first.alive = player->IsAlive();
+        first.inCombat = player->IsInCombat();
+        tracked_[player->GetObjectGuid()] = first;
         return;
     }
     UnitState& prev = it->second;
 
-    if (now.map != prev.map || now.zone != prev.zone || now.area != prev.area)
+    const uint32 level = player->GetLevel();
+    if (level > prev.level)
     {
         Json data;
         data["unit"] = PlayerRef(player);
-        AddZone(player, data);
-        Json from;
-        from["map"] = prev.map;
-        from["zone"] = prev.zone;
-        from["area"] = prev.area;
-        data["from"] = from;
-        Emit(EV_ZONE_CHANGED, data);
-    }
-    if (now.level > prev.level)
-    {
-        Json data;
-        data["unit"] = PlayerRef(player);
-        data["level"] = now.level;
+        data["level"] = level;
         data["from"] = prev.level;
         Emit(EV_LEVEL_UP, data);
     }
-    if (now.alive != prev.alive)
+    prev.level = level;
+
+    const bool alive = player->IsAlive();
+    if (alive != prev.alive)
     {
         Json data;
         data["unit"] = PlayerRef(player);
         data["pos"] = Position(player);
         AddZone(player, data);
-        Emit(now.alive ? EV_RESURRECT : EV_DEATH, data);
+        Emit(alive ? EV_RESURRECT : EV_DEATH, data);
+        prev.alive = alive;
     }
-    if (now.inCombat != prev.inCombat)
+
+    const bool inCombat = player->IsInCombat();
+    if (inCombat != prev.inCombat)
     {
         Json data;
         data["unit"] = PlayerRef(player);
         data["target"] = UnitRef(player->GetVictim());
-        Emit(now.inCombat ? EV_COMBAT_STARTED : EV_COMBAT_ENDED, data);
+        if (inCombat)
+        {
+            Json attackers = Json::array();
+            for (Unit* attacker : player->getAttackers())
+            {
+                if (attackers.size() >= 3)
+                    break;
+                attackers.push_back(UnitRef(attacker));
+            }
+            data["attackers"] = attackers;
+        }
+        Emit(inCombat ? EV_COMBAT_STARTED : EV_COMBAT_ENDED, data);
+        prev.inCombat = inCombat;
     }
-    prev = now;
+}
+
+// At the bubble interval: zone and area need a terrain lookup, so they are not read every tick.
+void Bridge::WatchZone(Player* player)
+{
+    auto it = tracked_.find(player->GetObjectGuid());
+    if (it == tracked_.end())
+        return;                                            // WatchMember lays the baseline first
+    UnitState& prev = it->second;
+    uint32 zone = 0, area = 0;
+    player->GetZoneAndAreaId(zone, area);
+    const uint32 map = player->GetMapId();
+    if (zone == prev.zone && area == prev.area && map == prev.map)
+        return;
+
+    Json data;
+    data["unit"] = PlayerRef(player);
+    AddZone(player, data);
+    Json from;
+    from["map"] = prev.map;
+    from["zone"] = prev.zone;
+    from["area"] = prev.area;
+    if (AreaTableEntry const* zoneEntry = GetAreaEntryByAreaID(prev.zone))
+        from["zone_name"] = zoneEntry->area_name[0];
+    if (AreaTableEntry const* areaEntry = GetAreaEntryByAreaID(prev.area))
+        from["area_name"] = areaEntry->area_name[0];
+    data["from"] = from;
+    Emit(EV_ZONE_CHANGED, data);
+    prev.map = map;
+    prev.zone = zone;
+    prev.area = area;
+}
+
+void Bridge::WatchGroup(Player* real)
+{
+    uint64 signature = 0;
+    std::vector<Player*> members;
+    Group* group = real->GetGroup();
+    if (group)
+    {
+        signature = group->GetLeaderGuid().GetRawValue() ^ (uint64(group->GetMembersCount()) << 56);
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+            if (Player* member = ref->getSource())
+            {
+                signature += uint64(member->GetObjectGuid().GetCounter()) * 0x9E3779B97F4A7C15ULL;   // order-independent
+                if (member->IsInWorld())
+                    members.push_back(member);
+            }
+    }
+    auto it = groupSignature_.find(real->GetObjectGuid());
+    if (it == groupSignature_.end())
+    {
+        groupSignature_[real->GetObjectGuid()] = signature;   // baseline
+        return;
+    }
+    if (it->second == signature)
+        return;
+    it->second = signature;
+
+    Json data;
+    data["player"] = PlayerRef(real);
+    data["leader"] = group ? Json(GuidString(group->GetLeaderGuid())) : Json(nullptr);
+    Json list = Json::array();
+    if (group)
+        for (Player* member : members)
+            list.push_back(PlayerRef(member));
+    else
+        list.push_back(PlayerRef(real));
+    data["members"] = list;
+    Emit(EV_GROUP_CHANGED, data);
+}
+
+// At the bubble interval: who entered or left each real player's bubble.
+void Bridge::BubbleScan()
+{
+    std::vector<Player*> reals;
+    std::vector<Player*> members = TrackedParty(&reals);
+    for (Player* member : members)
+        WatchZone(member);
+
+    const float radius = sPlayerbotAIConfig.bridgeSceneRadius > 0.0f ? sPlayerbotAIConfig.bridgeSceneRadius : 40.0f;
+    for (Player* real : reals)
+    {
+        std::list<Unit*> units;
+        MaNGOS::AnyUnitInObjectRangeCheck check(real, radius);
+        MaNGOS::UnitListSearcher<MaNGOS::AnyUnitInObjectRangeCheck> searcher(units, check);
+        Cell::VisitAllObjects(real, searcher, radius);
+
+        const ObjectGuid center = real->GetObjectGuid();
+        std::map<ObjectGuid, std::string>& last = bubble_[center];
+        const bool ready = bubbleReady_.count(center) > 0;
+        std::map<ObjectGuid, std::string> now;
+        for (Unit* unit : units)
+        {
+            if (unit == real)
+                continue;
+            if (unit->GetTypeId() == TYPEID_PLAYER && real->GetGroup() && static_cast<Player*>(unit)->GetGroup() == real->GetGroup())
+                continue;   // party members are watched, not bubbled
+            const ObjectGuid guid = unit->GetObjectGuid();
+            now[guid] = unit->GetName();
+            if (ready && !last.count(guid))
+            {
+                Json data = NearbyUnit(real, unit);
+                data["center"] = GuidString(center);
+                Emit(EV_UNIT_ENTERED, data);
+            }
+        }
+        if (ready)
+        {
+            for (auto const& entry : last)
+            {
+                if (now.count(entry.first))
+                    continue;
+                Json data;
+                data["center"] = GuidString(center);
+                data["guid"] = GuidString(entry.first);
+                data["name"] = entry.second;
+                Emit(EV_UNIT_LEFT, data);
+            }
+        }
+        last.swap(now);
+        bubbleReady_.insert(center);
+    }
+}
+
+// At the snapshot interval: one full scene per real player, so a client can reconcile drift.
+void Bridge::Snapshot()
+{
+    std::vector<Player*> reals;
+    TrackedParty(&reals);
+    for (Player* real : reals)
+        Emit(EV_SCENE, BuildScene(real));
+}
+
+// Login hooks -------------------------------------------------------------------
+
+void Bridge::OnBotLogin(Player* bot)
+{
+    if (!bot || !server_.IsRunning() || server_.ClientCount() == 0)
+        return;
+    Json data;
+    data["bot"] = PlayerRef(bot);
+    PlayerbotAI* ai = bot->GetPlayerbotAI();
+    Player* master = ai ? ai->GetMaster() : nullptr;
+    data["master"] = master ? PlayerRef(master) : Json(nullptr);
+    Emit(EV_BOT_LOGIN, data);
+}
+
+void Bridge::OnBotLogout(Player* bot)
+{
+    if (!bot || !server_.IsRunning() || server_.ClientCount() == 0)
+        return;
+    Json data;
+    data["guid"] = GuidString(bot->GetObjectGuid());
+    data["name"] = bot->GetName();
+    Emit(EV_BOT_LOGOUT, data);
 }
 
 // Packet hooks -----------------------------------------------------------------
 
-void Bridge::OnBotPacket(Player* bot, const WorldPacket& packet)
+// Packets sent to a bot or to the human: the same parse, the receiver differs.
+void Bridge::OnOutgoingPacket(Player* receiver, const WorldPacket& packet)
 {
     // IsInWorld also guarantees a map; GetMap() asserts on a player still logging in.
-    if (!bot || !bot->IsInWorld() || !server_.IsRunning() || server_.ClientCount() == 0)
+    if (!receiver || !receiver->IsInWorld() || !server_.IsRunning() || server_.ClientCount() == 0)
         return;
 
     try
@@ -449,7 +567,7 @@ void Bridge::OnBotPacket(Player* bot, const WorldPacket& packet)
         switch (packet.GetOpcode())
         {
             case SMSG_MESSAGECHAT:
-                ParseBotChat(bot, packet);
+                ParseChat(receiver, packet);
                 break;
 
             case SMSG_EMOTE:
@@ -463,7 +581,7 @@ void Bridge::OnBotPacket(Player* bot, const WorldPacket& packet)
                     break;
                 Json data;
                 data["kind"] = "emote";
-                data["sender"] = UnitOrGuid(bot->GetMap()->GetUnit(guid), guid);
+                data["sender"] = UnitOrGuid(receiver->GetMap()->GetUnit(guid), guid);
                 data["emote_id"] = emoteId;
                 Emit(EV_EMOTE, data);
                 break;
@@ -481,7 +599,7 @@ void Bridge::OnBotPacket(Player* bot, const WorldPacket& packet)
                     break;
                 Json data;
                 data["kind"] = "text_emote";
-                data["sender"] = UnitOrGuid(bot->GetMap()->GetUnit(guid), guid);
+                data["sender"] = UnitOrGuid(receiver->GetMap()->GetUnit(guid), guid);
                 data["text_emote"] = textEmote;
                 data["emote_num"] = emoteNum;
                 data["target_name"] = targetName;
@@ -522,7 +640,7 @@ void Bridge::OnBotPacket(Player* bot, const WorldPacket& packet)
                 uint32 questId;
                 p >> questId;
                 Json data;
-                data["unit"] = PlayerRef(bot);
+                data["unit"] = PlayerRef(receiver);
                 data["kind"] = "objectives_complete";
                 data["quest_id"] = questId;
                 AddQuestName(data, questId);
@@ -536,11 +654,11 @@ void Bridge::OnBotPacket(Player* bot, const WorldPacket& packet)
     }
     catch (ByteBufferException const&)
     {
-        sLog.outDetail("Bridge: could not parse opcode %u for bot %s", packet.GetOpcode(), bot->GetName());
+        sLog.outDetail("Bridge: could not parse opcode %u for %s", packet.GetOpcode(), receiver->GetName());
     }
 }
 
-void Bridge::ParseBotChat(Player* bot, const WorldPacket& packet)
+void Bridge::ParseChat(Player* receiver, const WorldPacket& packet)
 {
 #ifdef MANGOSBOT_ZERO
     WorldPacket p(packet);
@@ -616,19 +734,19 @@ void Bridge::ParseBotChat(Player* bot, const WorldPacket& packet)
     }
     else if (type == CHAT_MSG_WHISPER_INFORM)
     {
-        data["sender"] = PlayerRef(bot);            // the bot whispered someone
+        data["sender"] = PlayerRef(receiver);            // the receiver whispered someone
         data["receiver"] = PlayerRefByGuid(sender);  // the packet carries the recipient
     }
     else
     {
         data["sender"] = PlayerRefByGuid(sender);
-        data["receiver"] = type == CHAT_MSG_WHISPER ? PlayerRef(bot) : Json(nullptr);
+        data["receiver"] = type == CHAT_MSG_WHISPER ? PlayerRef(receiver) : Json(nullptr);
     }
     Emit(EV_CHAT, data);
 #else
     // SMSG_MESSAGECHAT layouts differ per expansion; only the classic one is
-    // wired. Chat from real players still arrives through OnMasterPacket.
-    (void)bot;
+    // wired. Chat typed by real players still arrives through OnMasterPacket.
+    (void)receiver;
     (void)packet;
 #endif
 }

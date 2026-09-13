@@ -7,11 +7,20 @@
 //                world thread, inside RandomPlayerbotMgr::UpdateAI, before the
 //                maps update, so touching any Player is safe
 //
-// Everything lives in this folder plus four one-line hooks:
-//   PlayerbotAIConfig::Initialize          -> sBridge.Start()
-//   RandomPlayerbotMgr::UpdateAI           -> sBridge.Update(diff)
-//   PlayerbotAI::HandleBotOutgoingPacket   -> sBridge.OnBotPacket(bot, packet)
+// Everything lives in this folder plus seven one-line hooks:
+//   PlayerbotAIConfig::Initialize            -> sBridge.Start()
+//   RandomPlayerbotMgr::UpdateAI             -> sBridge.Update(diff)
+//   PlayerbotAI::HandleBotOutgoingPacket     -> sBridge.OnBotPacket(bot, packet)
 //   PlayerbotMgr::HandleMasterIncomingPacket -> sBridge.OnMasterPacket(master, packet)
+//   PlayerbotMgr::HandleMasterOutgoingPacket -> sBridge.OnMasterOutgoingPacket(master, packet)
+//   PlayerbotHolder::OnBotLogin              -> sBridge.OnBotLogin(bot)
+//   PlayerbotHolder::LogoutPlayerBot         -> sBridge.OnBotLogout(bot)
+//
+// Events drive the world. Chat, emotes, items and quests come from packets.
+// Zone, level, death, combat and group changes are detected on the world tick
+// and emitted once, with whatever cause the game can name. The bubble around
+// each real player is reported as units entering and leaving. The full scene
+// is sent only as a slow reconciliation and on request.
 
 #include "Common.h"
 #include "Entities/ObjectGuid.h"
@@ -53,6 +62,8 @@ namespace BridgeProtocol
     constexpr char EV_DEATH[] = "death";
     constexpr char EV_RESURRECT[] = "resurrect";
     constexpr char EV_SCENE[] = "scene";
+    constexpr char EV_UNIT_ENTERED[] = "unit.entered";
+    constexpr char EV_UNIT_LEFT[] = "unit.left";
 
     constexpr uint32 DUPLICATE_WINDOW_MS = 2000;
 }
@@ -84,8 +95,11 @@ public:
 
     // Hooks. Run on whichever thread owns the player; they only read the
     // player and the packet, and Emit is thread-safe.
-    void OnBotPacket(Player* bot, const WorldPacket& packet);
+    void OnBotPacket(Player* bot, const WorldPacket& packet) { OnOutgoingPacket(bot, packet); }
+    void OnMasterOutgoingPacket(Player* master, const WorldPacket& packet) { OnOutgoingPacket(master, packet); }
     void OnMasterPacket(Player* master, const WorldPacket& packet);
+    void OnBotLogin(Player* bot);
+    void OnBotLogout(Player* bot);
 
     // Thread-safe. Wraps data in the event envelope and broadcasts it.
     void Emit(const char* name, Json data);
@@ -125,9 +139,16 @@ private:
     void SendReply(const std::weak_ptr<BridgeConnection>& to, const Json& id, const Json& result, const std::string& error);
 
     // Events
-    void Snapshot();
-    void TrackTransitions(Player* player);
-    void ParseBotChat(Player* bot, const WorldPacket& packet);
+    void OnOutgoingPacket(Player* receiver, const WorldPacket& packet);
+    void ParseChat(Player* receiver, const WorldPacket& packet);
+    void Watch();                       // every world tick: transitions of everyone in a real player's party
+    void WatchMember(Player* player);
+    void WatchZone(Player* player);
+    void WatchGroup(Player* real);
+    void BubbleScan();                  // every bubble interval: who entered or left each real player's bubble
+    void Snapshot();                    // every snapshot interval: reconciliation scenes
+    void ForgetTracking();
+    std::vector<Player*> TrackedParty(std::vector<Player*>* reals = nullptr);
     bool IsDuplicate(const std::string& key);
     void ExpireDuplicates(uint32 now);
 
@@ -154,14 +175,17 @@ private:
     std::map<std::string, Handler> handlers_;
     std::atomic<uint64> seq_{0};
     uint32 snapshotTimer_ = 0;
+    uint32 bubbleTimer_ = 0;
+    bool hadClients_ = false;
 
     std::mutex duplicatesMutex_;
     std::unordered_map<std::string, uint32> duplicates_;
 
     // World thread only
-    std::map<ObjectGuid, UnitState> tracked_;
-    std::map<ObjectGuid, std::string> botsOnline_;      // guid -> name
-    std::map<ObjectGuid, std::string> groupSignature_;  // real player -> leader + members
+    std::map<ObjectGuid, UnitState> tracked_;                              // party members of real players
+    std::map<ObjectGuid, uint64> groupSignature_;                          // real player -> leader and members
+    std::map<ObjectGuid, std::map<ObjectGuid, std::string>> bubble_;       // real player -> units around them
+    std::set<ObjectGuid> bubbleReady_;                                     // real players whose bubble has a baseline
 };
 
 #define sBridge Bridge::instance()

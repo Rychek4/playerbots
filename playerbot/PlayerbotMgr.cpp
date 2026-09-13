@@ -218,6 +218,8 @@ void PlayerbotHolder::LogoutPlayerBot(uint32 guid, bool allowInstant, bool forDe
         if (!ai)
             return;
 
+        sBridge.OnBotLogout(bot);
+
         if (!sPlayerbotAIConfig.bExplicitDbStoreSave)
         {
            Group* group = bot->GetGroup();
@@ -413,6 +415,8 @@ void PlayerbotHolder::JoinChatChannels(Player* bot)
 
 void PlayerbotHolder::OnBotLogin(Player * const bot)
 {
+    sBridge.OnBotLogin(bot);
+
     if (!sPlayerbotAIConfig.enabled)
         return;
 
@@ -1034,6 +1038,8 @@ void PlayerbotMgr::HandleMasterIncomingPacket(const WorldPacket& packet)
 }
 void PlayerbotMgr::HandleMasterOutgoingPacket(const WorldPacket& packet)
 {
+    sBridge.OnMasterOutgoingPacket(master, packet);
+
    ForEachPlayerbot([&](Player* bot)
    {
         if (!bot->GetPlayerbotAI())

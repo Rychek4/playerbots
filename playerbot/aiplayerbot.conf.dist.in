@@ -974,9 +974,12 @@ AiPlayerbot.UseKnockback = 1
 #AiPlayerbot.Bridge.Port = 8890
 # Address to listen on. Keep it local unless the control center runs elsewhere.
 #AiPlayerbot.Bridge.BindIp = 127.0.0.1
-# Milliseconds between scene snapshots (party state and nearby units)
-#AiPlayerbot.Bridge.SnapshotInterval = 2000
-# Radius in yards around each real player that counts as nearby in a scene
+# Milliseconds between reconciliation scenes (a full picture of party and bubble). Transitions and
+# units entering or leaving the bubble are events of their own; this is only a safety net.
+#AiPlayerbot.Bridge.SnapshotInterval = 30000
+# Milliseconds between checks of who entered or left each real player's bubble
+#AiPlayerbot.Bridge.BubbleInterval = 500
+# Radius in yards around each real player that counts as the bubble
 #AiPlayerbot.Bridge.SceneRadius = 40
 # Maximum simultaneous bridge clients
 #AiPlayerbot.Bridge.MaxClients = 4

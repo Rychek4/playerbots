@@ -397,6 +397,7 @@ public:
     int bridgePort;
     std::string bridgeBindIp;
     int bridgeSnapshotInterval;
+    int bridgeBubbleInterval;
     float bridgeSceneRadius;
     int bridgeMaxClients;
 
