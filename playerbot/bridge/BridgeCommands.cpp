@@ -421,7 +421,7 @@ std::optional<Json> Bridge::CmdBotRoster(const BridgeInbound&, const Json& args)
 
     // One synchronous read, the way the module reads its own bot lists.
     auto rows = CharacterDatabase.PQuery(
-        "SELECT guid, name, race, class, level, zone, map, online FROM characters WHERE %s ORDER BY RAND() LIMIT %u",
+        "SELECT guid, name, race, class, level, zone, map, online, gender FROM characters WHERE %s ORDER BY RAND() LIMIT %u",
         where.str().c_str(), limit);
     Json bots = Json::array();
     if (rows)
@@ -442,6 +442,8 @@ std::optional<Json> Bridge::CmdBotRoster(const BridgeInbound&, const Json& args)
             bot["zone"] = zone;
             bot["map"] = fields[6].GetUInt32();
             bot["online"] = fields[7].GetUInt8() != 0 || sObjectMgr.GetPlayer(ObjectGuid(HIGHGUID_PLAYER, counter)) != nullptr;
+            // So a control center writing lines for this character gets the pronouns right.
+            bot["gender"] = fields[8].GetUInt8() == 0 ? "male" : "female";
             if (ChrRacesEntry const* entry = sChrRacesStore.LookupEntry(race))
                 bot["race"] = entry->name[0];
             if (ChrClassesEntry const* entry = sChrClassesStore.LookupEntry(cls))
