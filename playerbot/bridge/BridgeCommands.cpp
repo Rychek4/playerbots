@@ -11,9 +11,13 @@
 
 #include "playerbot/PlayerbotAI.h"
 #include "playerbot/PlayerbotAIConfig.h"
+#include "playerbot/PlayerbotFactory.h"
 #include "playerbot/PlayerbotMgr.h"
 #include "playerbot/RandomPlayerbotMgr.h"
 #include "playerbot/playerbot.h"
+
+#include "Accounts/AccountMgr.h"
+#include "World/World.h"
 
 #include "Entities/Creature.h"
 #include "Entities/Player.h"
@@ -686,3 +690,234 @@ std::optional<Json> Bridge::CmdWeather(const BridgeInbound&, const Json& args)
     result["permanent"] = permanent;
     return result;
 }
+
+// Characters made to order ------------------------------------------------------
+//
+// The module already makes characters: RandomPlayerbotFactory rolls a name,
+// a race, a class and a face onto a random-bot account at startup. The
+// control center sometimes needs one made to a description instead: the
+// body an external player (Isaac) chose for himself, or a recurring cast
+// member a story bible named. bot.create is that, and nothing more: it
+// writes the character to the database the way the core's own character
+// screen does, and returns. Levels and gear are bot.init, which needs the
+// character standing in the world, because the module's factory works on a
+// Player, not a row.
+//
+// Where a character lives decides who may use it:
+//   account "master"   the named real player's own account. .bot add works
+//                      for its owner; the random-bot manager never touches it,
+//                      so it keeps its level and its name for as long as the
+//                      account does. The right home for a player's body.
+//   account "random"   the module's random-bot pool, like the roster.
+//                      bot.login (the cast machinery) works; the manager may
+//                      log it in on its own and re-roll its level over the
+//                      days. The right home for a stranger who comes back.
+
+namespace
+{
+    uint32 GenderId(const Json& args)
+    {
+        if (!args.contains("gender") || args["gender"].is_null())
+            return urand(0, 1) ? GENDER_MALE : GENDER_FEMALE;
+        if (!args["gender"].is_string())
+            throw BridgeCommandError("argument 'gender' must be male or female");
+        const std::string gender = args["gender"].get<std::string>();
+        if (gender == "male")
+            return GENDER_MALE;
+        if (gender == "female")
+            return GENDER_FEMALE;
+        throw BridgeCommandError("argument 'gender' must be male or female");
+    }
+
+    // A random account with a free character slot, the way the module's own
+    // factory fills them: the first one that is not full.
+    uint32 RandomAccountWithRoom()
+    {
+        const uint32 perRealm = sWorld.getConfig(CONFIG_UINT32_CHARACTERS_PER_REALM);
+        for (uint32 accountId : sPlayerbotAIConfig.randomBotAccounts)
+            if (sAccountMgr.GetCharactersCount(accountId) < perRealm)
+                return accountId;
+        throw BridgeCommandError("every random bot account is full; raise AiPlayerbot.RandomBotAccountCount");
+    }
+
+    Json CharacterRow(ObjectGuid guid)
+    {
+        Json out;
+        auto rows = CharacterDatabase.PQuery("SELECT name, race, class, level, gender, account FROM characters WHERE guid = %u",
+                                             guid.GetCounter());
+        if (!rows)
+            throw BridgeCommandError("the character vanished between two reads");
+        Field* fields = rows->Fetch();
+        const uint32 race = fields[1].GetUInt8();
+        const uint32 cls = fields[2].GetUInt8();
+        out["guid"] = Bridge::GuidString(guid);
+        out["name"] = fields[0].GetCppString();
+        out["race_id"] = race;
+        out["class_id"] = cls;
+        out["level"] = fields[3].GetUInt32();
+        out["gender"] = fields[4].GetUInt8() == 0 ? "male" : "female";
+        const uint32 accountId = fields[5].GetUInt32();
+        out["account"] = sPlayerbotAIConfig.IsInRandomAccountList(accountId) ? "random" : "player";
+        if (ChrRacesEntry const* entry = sChrRacesStore.LookupEntry(race))
+            out["race"] = entry->name[0];
+        if (ChrClassesEntry const* entry = sChrClassesStore.LookupEntry(cls))
+            out["class"] = entry->name[0];
+        return out;
+    }
+}
+
+std::optional<Json> Bridge::CmdBotCreate(const BridgeInbound&, const Json& args)
+{
+    std::string name = RequireString(args, "name");
+    if (!normalizePlayerName(name))
+        throw BridgeCommandError("'" + name + "' is not a valid character name");
+    if (ObjectMgr::CheckPlayerName(name, true) != CHAR_NAME_SUCCESS)
+        throw BridgeCommandError("'" + name + "' does not pass the server's name rules (length, letters, profanity)");
+    if (sObjectMgr.IsReservedName(name))
+        throw BridgeCommandError("'" + name + "' is a reserved name");
+
+    const std::string kind = OptionalString(args, "account", args.contains("master") ? "master" : "random");
+    uint32 accountId = 0;
+    if (kind == "master")
+    {
+        Player* master = RequireOnlinePlayer(RequireString(args, "master"), "master");
+        accountId = master->GetSession()->GetAccountId();
+    }
+    else if (kind == "random")
+        accountId = RandomAccountWithRoom();
+    else
+        throw BridgeCommandError("argument 'account' must be master or random");
+
+    // Made already? Then this is a lookup, so a control center can ask for
+    // the same body every start without minding whether it exists yet.
+    if (ObjectGuid existing = sObjectMgr.GetPlayerGuidByName(name))
+    {
+        const uint32 owner = sObjectMgr.GetPlayerAccountIdByGUID(existing);
+        const bool ours = kind == "master" ? owner == accountId : sPlayerbotAIConfig.IsInRandomAccountList(owner);
+        if (!ours)
+            throw BridgeCommandError("'" + name + "' exists on another account; pick a different name");
+        Json result = CharacterRow(existing);
+        result["created"] = false;
+        return result;
+    }
+
+    if (!args.contains("race") || !args.contains("class"))
+        throw BridgeCommandError("a new character needs 'race' and 'class' (id or name)");
+    const uint32 race = RaceId(args["race"]);
+    const uint32 cls = ClassId(args["class"]);
+    if (!sObjectMgr.GetPlayerInfo(race, cls))
+        throw BridgeCommandError("that race cannot be that class on this server");
+    const uint32 gender = GenderId(args);
+    if (sAccountMgr.GetCharactersCount(accountId) >= sWorld.getConfig(CONFIG_UINT32_CHARACTERS_PER_REALM))
+        throw BridgeCommandError("that account has no free character slot");
+
+    // A face, the way the module rolls one for its own bots.
+    std::vector<uint8> skinColors, facialHairTypes;
+    std::vector<std::pair<uint8, uint8>> faces, hairs;
+    for (CharSectionsMap::const_iterator itr = sCharSectionMap.begin(); itr != sCharSectionMap.end(); ++itr)
+    {
+        CharSectionsEntry const* entry = itr->second;
+        if (entry->Race != race || entry->Gender != gender)
+            continue;
+#ifndef MANGOSBOT_TWO
+        switch (entry->BaseSection)
+        {
+            case SECTION_TYPE_SKIN: skinColors.push_back(entry->ColorIndex); break;
+            case SECTION_TYPE_FACE: faces.push_back(std::pair<uint8, uint8>(entry->VariationIndex, entry->ColorIndex)); break;
+            case SECTION_TYPE_FACIAL_HAIR: facialHairTypes.push_back(entry->ColorIndex); break;
+            case SECTION_TYPE_HAIR: hairs.push_back(std::pair<uint8, uint8>(entry->VariationIndex, entry->ColorIndex)); break;
+        }
+#else
+        switch (entry->BaseSection)
+        {
+            case SECTION_TYPE_SKIN: skinColors.push_back(entry->Color); break;
+            case SECTION_TYPE_FACE: faces.push_back(std::pair<uint8, uint8>(entry->VariationIndex, entry->Color)); break;
+            case SECTION_TYPE_FACIAL_HAIR: facialHairTypes.push_back(entry->Color); break;
+            case SECTION_TYPE_HAIR: hairs.push_back(std::pair<uint8, uint8>(entry->VariationIndex, entry->Color)); break;
+        }
+#endif
+    }
+    if (skinColors.empty() || faces.empty() || hairs.empty())
+        throw BridgeCommandError("no appearance data for that race and gender");
+    const uint8 skinColor = skinColors[urand(0, skinColors.size() - 1)];
+    const std::pair<uint8, uint8> face = faces[urand(0, faces.size() - 1)];
+    const std::pair<uint8, uint8> hair = hairs[urand(0, hairs.size() - 1)];
+    const bool noFacialHair = race == RACE_TAUREN || (gender == GENDER_FEMALE && race != RACE_NIGHTELF && race != RACE_UNDEAD);
+#ifndef MANGOSBOT_TWO
+    const uint8 facialHair = noFacialHair || facialHairTypes.empty() ? 0 : facialHairTypes[urand(0, facialHairTypes.size() - 1)];
+#else
+    const uint8 facialHair = 0;
+#endif
+    (void)skinColor;
+
+    // The same session-less creation the module's factory does, then the
+    // same save the core's character screen does. The character is a row
+    // afterwards, not a Player: bot.add or bot.login brings it into the world.
+    WorldSession* session = new WorldSession(accountId, NULL, SEC_PLAYER,
+#ifdef MANGOSBOT_TWO
+        2, 0, LOCALE_enUS, "", 0, 0, false);
+#endif
+#ifdef MANGOSBOT_ONE
+        2, 0, LOCALE_enUS, "", 0, 0, false);
+#endif
+#ifdef MANGOSBOT_ZERO
+        0, LOCALE_enUS, "", 0);
+#endif
+    session->SetNoAnticheat();
+    Player* player = new Player(session);
+    if (!player->Create(sObjectMgr.GeneratePlayerLowGuid(), name, uint8(race), uint8(cls), uint8(gender),
+                        face.second, face.first, hair.first, hair.second, facialHair, 0))
+    {
+        delete player;
+        delete session;
+        throw BridgeCommandError("the core refused to create '" + name + "' (race/class problem?)");
+    }
+    player->setCinematic(2);
+    player->SetAtLoginFlag(AT_LOGIN_NONE);
+    player->SaveToDB();
+    const ObjectGuid guid = player->GetObjectGuid();
+    delete player;                       // created only to call SaveToDB(), as the core does
+    delete session;
+    sWorld.UpdateRealmCharCount(accountId);
+    sLog.outBasic("BRIDGE: created character '%s' (guid %u, race %u, class %u) on account %u for the control center",
+                  name.c_str(), guid.GetCounter(), race, cls, accountId);
+
+    Json result = CharacterRow(guid);
+    result["created"] = true;
+    return result;
+}
+
+std::optional<Json> Bridge::CmdBotInit(const BridgeInbound&, const Json& args)
+{
+    Player* bot = RequireBot(RequireString(args, "bot"));
+    PlayerbotAI* ai = bot->GetPlayerbotAI();
+    const uint32 maxLevel = sWorld.getConfig(CONFIG_UINT32_MAX_PLAYER_LEVEL);
+    uint32 level = OptionalUnsigned(args, "level", 0);
+    if (level == 0)
+    {
+        Player* master = ai ? ai->GetMaster() : nullptr;
+        level = master && ai->HasRealPlayerMaster() ? master->GetLevel() : bot->GetLevel();
+    }
+    if (level < 1 || level > maxLevel)
+        throw BridgeCommandError("argument 'level' must be between 1 and " + std::to_string(maxLevel));
+
+    const std::string quality = OptionalString(args, "quality", "green");
+    uint32 itemQuality = ITEM_QUALITY_UNCOMMON;
+    if (quality == "white" || quality == "common") itemQuality = ITEM_QUALITY_NORMAL;
+    else if (quality == "green" || quality == "uncommon") itemQuality = ITEM_QUALITY_UNCOMMON;
+    else if (quality == "blue" || quality == "rare") itemQuality = ITEM_QUALITY_RARE;
+    else if (quality == "epic" || quality == "purple") itemQuality = ITEM_QUALITY_EPIC;
+    else throw BridgeCommandError("argument 'quality' must be white, green, blue or epic");
+
+    // The module's own ".bot init <quality>": level, spells, skills, gear,
+    // consumables, from scratch at that level. Works on a bot in a group.
+    PlayerbotFactory factory(bot, level, itemQuality);
+    factory.Randomize(false, OptionalBool(args, "sync", false));
+
+    Json result;
+    result["unit"] = PlayerRef(bot);
+    result["level"] = bot->GetLevel();
+    result["quality"] = quality;
+    return result;
+}
+

@@ -35,6 +35,8 @@ Bridge::Bridge()
     handlers_["bot.strategy"] = &Bridge::CmdBotStrategy;
     handlers_["player.say"] = &Bridge::CmdPlayerSay;
     handlers_["weather"] = &Bridge::CmdWeather;
+    handlers_["bot.create"] = &Bridge::CmdBotCreate;
+    handlers_["bot.init"] = &Bridge::CmdBotInit;
 }
 
 Bridge::~Bridge()

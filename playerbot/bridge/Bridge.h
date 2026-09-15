@@ -172,6 +172,10 @@ private:
     std::optional<Json> CmdBotStrategy(const BridgeInbound& in, const Json& args);
     std::optional<Json> CmdPlayerSay(const BridgeInbound& in, const Json& args);
     std::optional<Json> CmdWeather(const BridgeInbound& in, const Json& args);
+    // Characters made to order (BridgeCommands.cpp): a named body for a
+    // player the control center speaks for, or a recurring cast member
+    std::optional<Json> CmdBotCreate(const BridgeInbound& in, const Json& args);
+    std::optional<Json> CmdBotInit(const BridgeInbound& in, const Json& args);
 
     // Command helpers
     static Player* FindOnlinePlayer(const std::string& name);
