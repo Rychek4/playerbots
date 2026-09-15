@@ -603,6 +603,15 @@ void Bridge::OnOutgoingPacket(Player* receiver, const WorldPacket& packet)
     if (!receiver || !receiver->IsInWorld() || !server_.IsRunning() || server_.ClientCount() == 0)
         return;
 
+    // Listen only through ears that belong to a tracked party. Every bot's
+    // session receives the chat and emotes around it, and with a thousand
+    // random bots roaming, some bot is always standing next to an Ironforge
+    // vendor; the first live session put that vendor's line in front of a
+    // player in Northshire. Real players always count. Bots count when they
+    // are in a real player's party, which is when what they hear is ours.
+    if (receiver->GetPlayerbotAI() && tracked_.find(receiver->GetObjectGuid()) == tracked_.end())
+        return;
+
     try
     {
         switch (packet.GetOpcode())
