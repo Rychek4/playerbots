@@ -3,6 +3,7 @@
 #include "PartyMemberToHeal.h"
 #include "playerbot/PlayerbotAIConfig.h"
 #include "playerbot/ServerFacade.h"
+#include "playerbot/LootObjectStack.h"
 
 using namespace ai;
 
@@ -61,7 +62,13 @@ Unit* PartyMemberToHeal::Calculate()
         Unit* target = rpgTarget.GetCreature(bot->GetInstanceId());
         if (target && sServerFacade.IsFriendlyTo(bot, target) && target->GetHealthPercent() < 100)
         {
-            needHeals.push_back(target);
+            LootObject loot = AI_VALUE(LootObject, "loot target");
+
+            if (!loot.IsLootPossible(bot))
+            {
+
+                needHeals.push_back(target);
+            }
         }
     }
 
@@ -88,6 +95,10 @@ Unit* PartyMemberToHeal::Calculate()
             {
                 continue;
             }
+
+            // do not heal if they will not receive healing due to debuff
+            if (player->GetMaxNegativeAuraModifier(SPELL_AURA_MOD_HEALING_PCT) <= -100)
+                continue;
 
             uint32 incomingDamage = 0;
             if (ai->HasStrategy("preheal", BotState::BOT_STATE_COMBAT))
@@ -265,13 +276,13 @@ Unit* PartyMemberToProtect::Calculate()
         if (sServerFacade.GetDistance2d(pVictim, unit) > attackDistance)
             continue;
 
-        if (ai->IsTank((Player*)pVictim) && pVictim->GetHealthPercent() > 10)
+        if (ai->IsTank((Player*)pVictim) && pVictim->GetHealthPercent() > 25)
             continue;
-        else if (pVictim->GetHealthPercent() > 30)
+        else if ((ai->IsMelee((Player*)pVictim) || pVictim->getClass() != CLASS_HUNTER) && pVictim->GetHealthPercent() > 50)
             continue;
 
         if (find(needProtect.begin(), needProtect.end(), pVictim) == needProtect.end())
-        needProtect.push_back(pVictim);
+            needProtect.push_back(pVictim);
     }
 
     if (needProtect.empty())

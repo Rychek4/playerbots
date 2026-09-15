@@ -4,6 +4,7 @@
 #include "ShamanAiObjectContext.h"
 #include "ShamanTriggers.h"
 #include "playerbot/strategy/NamedObjectContext.h"
+#include "playerbot/strategy/triggers/ChatCommandTrigger.h"
 #include "ElementalShamanStrategy.h"
 #include "RestorationShamanStrategy.h"
 #include "EnhancementShamanStrategy.h"
@@ -151,7 +152,7 @@ namespace ai
                 creators["totembar spirits"] = [](PlayerbotAI* ai) { return new ShamanTotemBarSpiritsStrategy(ai); };
                 creators["totem fire nova"] = [](PlayerbotAI* ai) { return new ShamanManualTotemStrategy(ai, "totem fire nova", "fire totem", "fire nova"); };
                 creators["totem fire flametongue"] = [](PlayerbotAI* ai) { return new ShamanManualTotemStrategy(ai, "totem fire flametongue", "fire totem", "flametongue totem"); };
-                creators["totem fire resistance"] = [](PlayerbotAI* ai) { return new ShamanManualTotemStrategy(ai, "totem fire resistance", "fire totem", "fire resistance totem"); };
+                creators["totem fire resistance"] = [](PlayerbotAI* ai) { return new ShamanManualTotemStrategy(ai, "totem fire resistance", "fire totem", "frost resistance totem"); };
                 creators["totem fire magma"] = [](PlayerbotAI* ai) { return new ShamanManualTotemStrategy(ai, "totem fire magma", "fire totem", "magma totem"); };
                 creators["totem fire searing"] = [](PlayerbotAI* ai) { return new ShamanManualTotemStrategy(ai, "totem fire searing", "fire totem", "searing totem"); };
                 creators["totem fire wrath"] = [](PlayerbotAI* ai) { return new ShamanManualTotemStrategy(ai, "totem fire wrath", "fire totem", "totem of wrath"); };
@@ -269,6 +270,7 @@ namespace ai
                 creators["party member cleanse spirit curse"] = [](PlayerbotAI* ai) { return new PartyMemberCleanseSpiritCurseTrigger(ai); };
                 creators["party member cleanse spirit disease"] = [](PlayerbotAI* ai) { return new PartyMemberCleanseSpiritDiseaseTrigger(ai); };
                 creators["shock"] = [](PlayerbotAI* ai) { return new ShockTrigger(ai); };
+                creators["flame shock"] = [](PlayerbotAI* ai) { return new FlameShockTrigger(ai); };
                 creators["frost shock snare"] = [](PlayerbotAI* ai) { return new FrostShockSnareTrigger(ai); };
                 creators["heroism"] = [](PlayerbotAI* ai) { return new HeroismTrigger(ai); };
                 creators["bloodlust"] = [](PlayerbotAI* ai) { return new BloodlustTrigger(ai); };
@@ -283,6 +285,7 @@ namespace ai
                 creators["earth totem"] = [](PlayerbotAI* ai) { return new EarthTotemTrigger(ai); };
                 creators["water totem"] = [](PlayerbotAI* ai) { return new WaterTotemTrigger(ai); };
                 creators["air totem"] = [](PlayerbotAI* ai) { return new AirTotemTrigger(ai); };
+                creators["place totems"] = [](PlayerbotAI* ai) { return new ChatCommandTrigger(ai, "place totems"); };
                 creators["call of the elements"] = [](PlayerbotAI* ai) { return new TotemsAreNotSummonedTrigger(ai); };
                 creators["call of the ancestors"] = [](PlayerbotAI* ai) { return new TotemsAreNotSummonedTrigger(ai); };
                 creators["call of the spirits"] = [](PlayerbotAI* ai) { return new TotemsAreNotSummonedTrigger(ai); };

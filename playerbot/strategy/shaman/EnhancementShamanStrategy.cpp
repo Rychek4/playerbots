@@ -492,7 +492,11 @@ void EnhancementShamanStrategy::InitCombatTriggers(std::list<TriggerNode*>& trig
 
     triggers.push_back(new TriggerNode(
         "stormstrike",
-        NextAction::array(0, new NextAction("stormstrike", ACTION_NORMAL + 1), NULL)));
+        NextAction::array(0, new NextAction("stormstrike", ACTION_NORMAL + 2), NULL)));
+
+    triggers.push_back(new TriggerNode(
+        "flame shock",
+        NextAction::array(0, new NextAction("flame shock", ACTION_NORMAL + 1), NULL)));
 
     triggers.push_back(new TriggerNode(
         "shock",
@@ -594,9 +598,9 @@ void EnhancementShamanAoeStrategy::InitCombatTriggers(std::list<TriggerNode*>& t
         "melee medium aoe",
         NextAction::array(0, new NextAction("fire nova", ACTION_HIGH), NULL)));
 
-    triggers.push_back(new TriggerNode(
-        "melee light aoe",
-        NextAction::array(0, new NextAction("oil of immolation", ACTION_HIGH), NULL)));
+    //triggers.push_back(new TriggerNode(
+        //"melee light aoe",
+        //NextAction::array(0, new NextAction("oil of immolation", ACTION_HIGH), NULL)));
 }
 
 void EnhancementShamanAoeStrategy::InitNonCombatTriggers(std::list<TriggerNode*>& triggers)
@@ -1030,9 +1034,9 @@ void EnhancementShamanAoeStrategy::InitCombatTriggers(std::list<TriggerNode*>& t
         "melee medium aoe",
         NextAction::array(0, new NextAction("fire nova", ACTION_HIGH), NULL)));
 
-    triggers.push_back(new TriggerNode(
-        "melee light aoe",
-        NextAction::array(0, new NextAction("oil of immolation", ACTION_HIGH), NULL)));
+    //triggers.push_back(new TriggerNode(
+        //"melee light aoe",
+        //NextAction::array(0, new NextAction("oil of immolation", ACTION_HIGH), NULL)));
 }
 
 void EnhancementShamanAoeStrategy::InitNonCombatTriggers(std::list<TriggerNode*>& triggers)

@@ -98,7 +98,7 @@ bool PullStartAction::Execute(Event& event)
             {
                 result = ai->DoSpecificAction(strategy->GetPreActionName(), event, true);
                 if(result)
-                    SetDuration(ai->GetAIInternalUpdateDelay());
+                    SetDuration(3000);
             }
 
             // Set the pet on passive mode during the pull
@@ -225,6 +225,9 @@ bool PullEndAction::Execute(Event& event)
             if (creatureAI)
             {
                 creatureAI->SetReactState(strategy->GetPetReactState());
+                Unit* target = AI_VALUE(Unit*, "current target");
+                if (creatureAI->GetReactState() != REACT_PASSIVE && target)
+                    creatureAI->AttackStart(target);
             }
         }
 

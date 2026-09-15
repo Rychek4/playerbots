@@ -22,6 +22,7 @@ namespace ai
     MELEE_DEBUFF_ACTION(CastRendAction, "rend");
     MELEE_DEBUFF_ENEMY_ACTION(CastRendOnAttackerAction, "rend");
     MELEE_DEBUFF_ACTION_R(CastThunderClapAction, "thunder clap", 8.0f);
+    SPELL_ACTION(CastThunderClapThreatAction, "thunder clap");
     SNARE_ACTION(CastThunderClapSnareAction, "thunder clap");
     SNARE_ACTION(CastHamstringAction, "hamstring");
     MELEE_ACTION(CastOverpowerAction, "overpower");
@@ -64,7 +65,7 @@ namespace ai
     BUFF_ACTION(CastRampageAction, "rampage");
 
     // protection
-    MELEE_ACTION_U(CastTauntAction, "taunt", GetTarget() && GetTarget()->GetVictim() && GetTarget()->GetVictim() != bot);
+    SPELL_ACTION_U(CastTauntAction, "taunt", GetTarget() && GetTarget()->GetVictim() && GetTarget()->GetVictim() != bot);
     SNARE_ACTION(CastTauntOnSnareTargetAction, "taunt");
     BUFF_ACTION(CastBloodrageAction, "bloodrage");
     MELEE_ACTION(CastShieldBashAction, "shield bash");
@@ -83,7 +84,7 @@ namespace ai
     MELEE_ACTION(CastShieldSlamAction, "shield slam");
     MELEE_ACTION(CastConcussionBlowAction, "concussion blow");
     // protection talents 2.4.3
-    MELEE_ACTION(CastDevastateAction, "devastate");
+    // MELEE_ACTION(CastDevastateAction, "devastate");
     // protection talents 3.3.5
     MELEE_DEBUFF_ACTION_R(CastShockwaveAction, "shockwave", 8.0f);
     SNARE_ACTION(CastShockwaveSnareAction, "shockwave");
@@ -140,7 +141,31 @@ namespace ai
             if (isTank && !target->IsPlayer())
                 return true;
 
-            return !ai->HasAura("sunder armor", target, true);
+            return !ai->HasAura("sunder armor", target, true) && !ai->HasAura("expose armor", target);
+        }
+    };
+
+    class CastDevastateAction : public CastMeleeSpellAction
+    {
+    public:
+        CastDevastateAction(PlayerbotAI* ai) : CastMeleeSpellAction(ai, "devastate") {}
+
+        virtual bool isUseful() override
+        {
+            Unit* target = GetTarget();
+            if (!target)
+                return false;
+
+            const bool isTank = ai->IsTank(bot);
+
+            uint32 shieldSlam = AI_VALUE2(uint32, "spell id", "shield slam");
+
+            if (shieldSlam)
+            {
+                return !bot->IsSpellReady(shieldSlam);
+            }
+
+            return true;
         }
     };
 

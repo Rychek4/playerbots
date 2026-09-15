@@ -66,6 +66,9 @@ Unit* PartyMemberValue::FindPartyMember(FindPlayerPredicate &predicate, bool ign
     if (allowBufOutOfGroupPlayers && !ai->AllowActivity(OUT_OF_PARTY_ACTIVITY))
         allowBufOutOfGroupPlayers = false;
 
+    if (allowBufOutOfGroupPlayers && AI_VALUE2(bool, "has mana", "self target") && AI_VALUE2(uint8, "mana", "self target") < sPlayerbotAIConfig.mediumMana)
+        allowBufOutOfGroupPlayers = false;
+
     if (allowBufOutOfGroupPlayers && AI_VALUE2(float, "distance", "master target") > sPlayerbotAIConfig.sightDistance)
         allowBufOutOfGroupPlayers = false;
 

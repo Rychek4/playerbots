@@ -32,6 +32,15 @@ public:
         char* source = (char*)str.c_str();
         return ExtractSpellIdFromLink(&source);
     }
+    uint32 extractCreatureId(std::string str)
+    {
+        char* source = (char*)str.c_str();
+        uint32 id;
+        if (ExtractUInt32(&source, id))
+            return id;
+            
+        return 0;
+    }
 };
 
 class ChannelAcces
@@ -474,7 +483,7 @@ public:
     uint8 GetManaPercent(const Unit& target) const;
     uint8 GetManaPercent() const;
 
-    virtual bool IsInterruptableSpellCasting(Unit* player, std::string spell, uint8 effectMask);
+    virtual bool IsInterruptableSpellCasting(Unit* player, std::string spell);
     virtual bool HasAuraToDispel(Unit* player, uint32 dispelType);
     bool canDispel(const SpellEntry* entry, uint32 dispelType);
     static bool IsHealSpell(const SpellEntry* entry);
