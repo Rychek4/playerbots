@@ -548,8 +548,25 @@ void Bridge::OnBotLogin(Player* bot)
     EmitBotLogin(bot);
 }
 
+// A thousand random bots log in and out all day; a client cares about the
+// ones that are its business: a companion with a master, a member of a
+// tracked party, or a character it asked for through bot.login. The first
+// live session showed the rest as a scrolling wall of "logged in (masterless)".
+bool Bridge::Announces(Player* bot) const
+{
+    if (!bot)
+        return false;
+    PlayerbotAI* ai = bot->GetPlayerbotAI();
+    if (ai && ai->GetMaster())
+        return true;
+    const ObjectGuid guid = bot->GetObjectGuid();
+    return tracked_.count(guid) > 0 || requestedLogins_.count(guid) > 0;
+}
+
 void Bridge::EmitBotLogin(Player* bot)
 {
+    if (!Announces(bot))
+        return;
     Json data;
     data["bot"] = PlayerRef(bot);
     PlayerbotAI* ai = bot->GetPlayerbotAI();
@@ -587,6 +604,10 @@ void Bridge::OnBotLogout(Player* bot)
     if (bot)
         pendingLogins_.erase(bot->GetObjectGuid());   // never announce a login that ended first
     if (!bot || !server_.IsRunning() || server_.ClientCount() == 0)
+        return;
+    const bool announce = Announces(bot);
+    requestedLogins_.erase(bot->GetObjectGuid());     // a request is spent once the character has gone
+    if (!announce)
         return;
     Json data;
     data["guid"] = GuidString(bot->GetObjectGuid());

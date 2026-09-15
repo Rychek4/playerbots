@@ -498,8 +498,12 @@ std::optional<Json> Bridge::CmdBotLogin(const BridgeInbound&, const Json& args)
 
     // The module's own random-bot login. The character loads asynchronously;
     // the bot.login event says when it stands in the world.
+    requestedLogins_.insert(guid);   // announce this one's arrival even though it has no master
     if (!sRandomPlayerbotMgr.LoginRandomBot(guid.GetCounter()))
+    {
+        requestedLogins_.erase(guid);
         throw BridgeCommandError("the module refused to log in '" + name + "'");
+    }
     result["queued"] = true;
     result["guid"] = GuidString(guid);
     result["name"] = name;

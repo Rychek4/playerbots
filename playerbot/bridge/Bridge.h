@@ -145,6 +145,7 @@ private:
     void WatchMember(Player* player);
     void WatchZone(Player* player);
     void WatchGroup(Player* real);
+    bool Announces(Player* bot) const;  // is this bot's coming and going any business of a client's?
     void EmitBotLogin(Player* bot);     // the bot.login event proper, once the bot is really in the world
     void FlushPendingLogins();          // every world tick: emit for bots that have arrived since
     void BubbleScan();                  // every bubble interval: who entered or left each real player's bubble
@@ -197,6 +198,7 @@ private:
     std::map<ObjectGuid, std::map<ObjectGuid, std::string>> bubble_;       // real player -> units around them
     std::set<ObjectGuid> bubbleReady_;                                     // real players whose bubble has a baseline
     std::set<ObjectGuid> pendingLogins_;                                   // bots the module has that the core has not put in the world yet
+    std::set<ObjectGuid> requestedLogins_;                                 // bots a client logged in through bot.login; announced even without a master
 };
 
 #define sBridge Bridge::instance()
