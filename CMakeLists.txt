@@ -157,7 +157,18 @@ if(PCH)
   include_directories(${CMAKE_CURRENT_BINARY_DIR})
 endif()
 
+file(GLOB Playerbot_Bridge ${CMAKE_CURRENT_SOURCE_DIR}/playerbot/bridge/*.cpp ${CMAKE_CURRENT_SOURCE_DIR}/playerbot/bridge/*.h)
+  source_group("Player Bot\\Bridge" FILES ${Playerbot_Bridge})
+  LIST(APPEND LIBRARY_SRCS ${Playerbot_Bridge})
+
 add_library(${LIBRARY_NAME} STATIC ${LIBRARY_SRCS})
+
+# The narrator bridge speaks JSON. The core ships nlohmann/json under dep/json
+# but does not put it on any include path, so the module does.
+if(NOT EXISTS "${CMAKE_SOURCE_DIR}/dep/json/json.hpp")
+  message(FATAL_ERROR "The PlayerBots bridge needs ${CMAKE_SOURCE_DIR}/dep/json/json.hpp (nlohmann/json), which this core does not ship")
+endif()
+target_include_directories(${LIBRARY_NAME} PRIVATE ${CMAKE_SOURCE_DIR}/dep/json)
 
 target_link_libraries(${LIBRARY_NAME}
   PRIVATE shared

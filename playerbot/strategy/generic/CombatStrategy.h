@@ -36,6 +36,28 @@ namespace ai
         void InitReactionTriggers(std::list<TriggerNode*>& triggers) override;
     };
 
+    class AvoidSpecificCreaturesStrategy : public Strategy
+    {
+    public:
+        AvoidSpecificCreaturesStrategy(PlayerbotAI* ai) : Strategy(ai) {}
+        std::string getName() override { return "avoid specific creatures"; }
+
+#ifdef GenerateBotHelp
+        virtual std::string GetHelpName() { return "avoid specific creatures"; } //Must equal iternal name
+        virtual std::string GetHelpDescription() 
+        {
+            return "This strategy will make bots move away from specific creatures.";
+        }
+        virtual std::vector<std::string> GetRelatedStrategies() { return { }; }
+#endif
+
+    private:
+        void InitCombatMultipliers(std::list<Multiplier*>& multipliers) override;
+        void InitReactionMultipliers(std::list<Multiplier*>& multipliers) override;
+        void InitCombatTriggers(std::list<TriggerNode*>& triggers) override;
+        void InitReactionTriggers(std::list<TriggerNode*>& triggers) override;
+    };
+
     class AvoidAoeStrategyMultiplier : public Multiplier
     {
     public:
@@ -51,16 +73,34 @@ namespace ai
 #endif
     };
 
+    class AvoidSpecificCreaturesStrategyMultiplier : public Multiplier
+    {
+    public:
+        AvoidSpecificCreaturesStrategyMultiplier(PlayerbotAI* ai) : Multiplier(ai, "avoid specific creatures") {}
+        float GetValue(Action* action) { return 1.0f; }
+        
+#ifdef GenerateBotHelp
+        virtual std::string GetHelpName() { return "avoid specific creatures" } //Must equal iternal name
+        virtual std::string GetHelpDescription() {
+            return "This makes bots run away from specific creatures.";
+        }
+        virtual std::vector<std::string> GetRelatedStrategies() { return {}; }
+#endif
+    };
+
     class WaitForAttackStrategy : public Strategy
     {
     public:
         WaitForAttackStrategy(PlayerbotAI* ai) : Strategy(ai) {}
+        static WaitForAttackStrategy* Get(PlayerbotAI* ai);
         std::string getName() override { return "wait for attack"; }
 
         static bool ShouldWait(PlayerbotAI* ai);
         static uint8 GetWaitTime(PlayerbotAI* ai);
         static float GetSafeDistance() { return sPlayerbotAIConfig.spellDistance; }
         static float GetSafeDistanceThreshold() { return 2.5f; }
+        ReactStates GetPetReactState() const { return petReactState; }
+        void SetPetReactState(ReactStates reactState) { petReactState = reactState; }
 
 #ifdef GenerateBotHelp
         virtual std::string GetHelpName() { return "wait for attack"; } //Must equal iternal name
@@ -73,6 +113,9 @@ namespace ai
     private:
         void InitCombatTriggers(std::list<TriggerNode*>& triggers) override;
         void InitCombatMultipliers(std::list<Multiplier*>& multipliers) override;
+
+    private:
+        ReactStates petReactState;
     };
 
     class WaitForAttackMultiplier : public Multiplier

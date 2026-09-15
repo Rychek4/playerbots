@@ -98,6 +98,60 @@ void EquipAction::ListItems(Player* requester)
     ai->InventoryTellItems(requester, items, soulbound);
 }
 
+bool EquipAction::IsEnchantable(Item* item, uint32 spellid)
+{
+
+#ifdef MANGOS
+   SpellEntry const* spellInfo = sSpellStore.LookupEntry(spellid);
+#else
+   SpellEntry const* spellInfo = sSpellTemplate.LookupEntry<SpellEntry>(spellid);
+#endif
+   if (!spellInfo)
+      return false;
+
+    return ((1 << item->GetProto()->SubClass) & spellInfo->EquippedItemSubClassMask) &&
+      ((1 << item->GetProto()->InventoryType) & spellInfo->EquippedItemInventoryTypeMask);
+
+}
+
+void EquipAction::EnchantItem(Item* item)
+{
+    if (item)
+    {
+        int tab = AiFactory::GetPlayerSpecTab(bot);
+        uint32 tempId = uint32((uint32)bot->getClass() * (uint32)10);
+        uint8 spec = tempId += (uint32)tab;
+
+        if (enchants.empty())
+        {
+            auto result = WorldDatabase.PQuery("SELECT class, spec, spellid, slotid FROM ai_playerbot_enchants");
+            if (result)
+            {
+                do
+                {
+                    Field* fields = result->Fetch();
+
+                    EnchantTemplate pEnchant;
+                    pEnchant.ClassId = fields[0].GetUInt8();
+                    pEnchant.SpecId = fields[1].GetUInt8();
+                    pEnchant.SpellId = fields[2].GetUInt32();
+                    pEnchant.SlotId = fields[3].GetUInt8();
+                    enchants.push_back(pEnchant);
+                } while (result->NextRow());
+            }
+        }
+
+        for (const auto& enchant : enchants)
+        {
+            if (enchant.ClassId == bot->getClass() && enchant.SpecId == spec)
+            {
+                if (IsEnchantable(item, enchant.SpellId))
+                    ai->EnchantItemT(enchant.SpellId, enchant.SlotId, item);
+            }
+        }
+    }
+}
+
 void EquipAction::EquipItems(Player* requester, ItemIds ids)
 {
     for (ItemIds::iterator i = ids.begin(); i != ids.end(); i++)
@@ -116,6 +170,8 @@ void EquipAction::EquipItemsToSlot(Player* requester, ItemIds ids, uint8 targetS
         std::list<Item*> items = visitor.GetResult();
         if (!items.empty())
         {
+            Item* item = *items.begin();
+            
             EquipItemToSlot(requester, *items.begin(), targetSlot);
         }
     }
@@ -127,7 +183,9 @@ void EquipAction::EquipItem(Player* requester, FindItemVisitor* visitor)
     std::list<Item*> items = visitor->GetResult();
 	if (!items.empty()) 
     {
-        EquipItem(ai, requester, *items.begin());
+        Item* item = *items.begin();
+
+        EquipItem(ai, requester, item);
     }
 }
 
@@ -385,8 +443,12 @@ bool EquipUpgradesAction::Execute(Event& event)
             sLog.outDetail("Bot #%d <%s> auto equips item %d (%s)", bot->GetGUIDLow(), bot->GetName(), item->GetProto()->ItemId, usage == ItemUsage::ITEM_USAGE_EQUIP ? "better than current" : usage == ItemUsage::ITEM_USAGE_BAD_EQUIP ? "wrong item but empty slot" : "");
             ai->TellDebug(ai->GetMaster(), "Equipping: " + chat->formatItem(item) + " - " + ItemUsageValue::ReasonForNeed(usage, item, 1, bot), "debug equip");
 
-            EquipItem(ai, GetMaster(), item, item == oldMainhand || item == oldOffhand);   
+            EquipItem(ai, GetMaster(), item, item == oldMainhand || item == oldOffhand);  
             didEquip = true;
+
+            // auto enchant if cheat is turned on
+            if (sPlayerbotAIConfig.autoEnchantUpgradeLoot && !item->GetEnchantmentId(EnchantmentSlot(0)))
+                EnchantItem(item); 
         }
     }
 
@@ -418,3 +480,5 @@ bool EquipUpgradesAction::Execute(Event& event)
 
     return didEquip;
 }
+
+

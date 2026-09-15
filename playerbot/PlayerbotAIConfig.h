@@ -328,6 +328,7 @@ public:
 
     std::string autoPickReward;
     bool autoEquipUpgradeLoot;
+    bool autoEnchantUpgradeLoot;
     bool syncQuestWithPlayer;
     bool syncQuestForPlayer;
     std::string autoTrainSpells;
@@ -392,6 +393,15 @@ public:
     std::vector<worldBuff> worldBuffs;
 
     int commandServerPort;
+
+    // Narrator bridge (playerbot/bridge). See PROTOCOL.md in Azeroth_Narrator.
+    int bridgePort;
+    std::string bridgeBindIp;
+    int bridgeSnapshotInterval;
+    int bridgeBubbleInterval;
+    float bridgeSceneRadius;
+    int bridgeMaxClients;
+
     bool perfMonEnabled;
     bool bExplicitDbStoreSave = false;
 

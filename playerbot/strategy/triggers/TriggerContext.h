@@ -19,6 +19,7 @@
 #include "BlackwingLairDungeonTriggers.h"
 #include "KarazhanDungeonTriggers.h"
 #include "NaxxramasDungeonTriggers.h"
+#include "MechanarDungeonTriggers.h"
 #include "GlyphTriggers.h"
 #include "WorldBuffTravelTriggers.h"
 
@@ -90,7 +91,7 @@ namespace ai
 
             creators["pull start"] = [](PlayerbotAI* ai) { return new PullStartTrigger(ai); };
             creators["pull end"] = [](PlayerbotAI* ai) { return new PullEndTrigger(ai); };
-
+            creators["dps assist"] = [](PlayerbotAI* ai) { return new DpsAssistTrigger(ai); };
             creators["tank assist"] = [](PlayerbotAI* ai) { return new TankAssistTrigger(ai); };
             creators["lose aggro"] = [](PlayerbotAI* ai) { return new LoseAggroTrigger(ai); };
             creators["has aggro"] = [](PlayerbotAI* ai) { return new HasAggroTrigger(ai); };
@@ -172,6 +173,7 @@ namespace ai
             creators["far from rpg target"] = [](PlayerbotAI* ai) { return new FarFromRpgTargetTrigger(ai); };
             creators["near rpg target"] = [](PlayerbotAI* ai) { return new NearRpgTargetTrigger(ai); };
             creators["no rti target"] = [](PlayerbotAI* ai) { return new NoRtiTrigger(ai); };
+            creators["no rti cc target"] = [](PlayerbotAI* ai) { return new NoRtiCCTrigger(ai); };
 
             creators["give food"] = [](PlayerbotAI* ai) { return new GiveFoodTrigger(ai); };
             creators["give water"] = [](PlayerbotAI* ai) { return new GiveWaterTrigger(ai); };
@@ -308,6 +310,8 @@ namespace ai
             creators["leave naxxramas"] = [](PlayerbotAI* ai) { return new NaxxramasLeaveDungeonTrigger(ai); };
             creators["enter blackwing lair"] = [](PlayerbotAI* ai) { return new BlackwingLairEnterDungeonTrigger(ai); };
             creators["leave blackwing lair"] = [](PlayerbotAI* ai) { return new BlackwingLairLeaveDungeonTrigger(ai); };
+            creators["enter mechanar"] = [](PlayerbotAI* ai) { return new MechanarEnterDungeonTrigger(ai); };
+            creators["leave mechanar"] = [](PlayerbotAI* ai) { return new MechanarLeaveDungeonTrigger(ai); };
 
             // Dungeon Boss Triggers
             creators["start onyxia fight"] = [](PlayerbotAI* ai) { return new OnyxiaStartFightTrigger(ai); };
@@ -339,9 +343,16 @@ namespace ai
             creators["start prince malchezaar fight"] = [](PlayerbotAI* ai) { return new PrinceMalchezaarStartFightTrigger(ai); };
             creators["end prince malchezaar fight"] = [](PlayerbotAI* ai) { return new PrinceMalchezaarEndFightTrigger(ai); };
             creators["netherspite infernal too close"] = [](PlayerbotAI* ai) { return new NetherspiteInfernalTooCloseTrigger(ai); };
+            creators["prince malchezaar too close"] = [](PlayerbotAI* ai) { return new PrinceMalchezaarTooCloseTrigger(ai); };
 
             creators["start four horseman fight"] = [](PlayerbotAI* ai) { return new FourHorsemanStartFightTrigger(ai); };
             creators["end four horseman fight"] = [](PlayerbotAI* ai) { return new FourHorsemanEndFightTrigger(ai); };
+
+            creators["start nethermancer sepethrea fight"] = [](PlayerbotAI* ai) { return new NethermancerSepethreaStartFightTrigger(ai); };
+            creators["end nethermancer sepethrea fight"] = [](PlayerbotAI* ai) { return new NethermancerSepethreaEndFightTrigger(ai); };
+            creators["raging flames too close"] = [](PlayerbotAI* ai) { return new RagingFlamesTooCloseTrigger(ai); };
+
+            creators["specific creature too close"] = [](PlayerbotAI* ai) { return new CloseToSpecificCreaturesTrigger(ai, "specific creature too close", 10.0f, true); };
 
             // Test framework triggers
 #ifdef GenerateBotTests

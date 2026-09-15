@@ -163,7 +163,8 @@ Value<Unit*>* BuffOnPartyTrigger::GetTargetValue()
 
 Value<Unit*>* GreaterBuffOnPartyTrigger::GetTargetValue()
 {
-    const std::string qualifier = spell + "-" + (ignoreTanks ? "1" : "0");
+    const std::string spells = !lowerSpell.empty() ? spell + "," + lowerSpell : spell;
+    const std::string qualifier = spells + "-" + (ignoreTanks ? "1" : "0");
     return context->GetValue<Unit*>("party member without aura", qualifier);
 }
 
@@ -433,7 +434,7 @@ bool ItemCountTrigger::IsActive()
 
 bool InterruptSpellTrigger::IsActive()
 {
-	return SpellTrigger::IsActive() && ai->IsInterruptableSpellCasting(GetTarget(), getName(), true);
+	return SpellTrigger::IsActive() && ai->IsInterruptableSpellCasting(GetTarget(), getName());
 }
 
 bool DeflectSpellTrigger::IsActive()
@@ -586,6 +587,35 @@ bool TankAssistTrigger::IsActive()
 #endif
 }
 
+bool DpsAssistTrigger::IsActive()
+{
+    if (!AI_VALUE(bool, "has attackers"))
+        return false;
+
+    Unit* currentTarget = AI_VALUE(Unit*, "current target");
+    if (!currentTarget)
+        return false;
+
+    // If owner is waiting this will trigger attack again to call for pet
+    WaitForAttackStrategy* strategy = WaitForAttackStrategy::Get(ai);
+    bool isWaitingForAttack = false;
+    if (strategy)
+        isWaitingForAttack = strategy->ShouldWait(ai); 
+        
+    Pet* pet = bot->GetPet();
+    if (pet)
+    {
+        UnitAI* creatureAI = ((Creature*)pet)->AI();
+        if (creatureAI)
+        {
+            if (isWaitingForAttack)
+                return false;
+        }
+    }
+
+    return true;
+}
+
 bool IsBehindTargetTrigger::IsActive()
 {
     Unit* target = AI_VALUE(Unit*, "current target");
@@ -608,7 +638,7 @@ bool HasCcTargetTrigger::IsActive()
     uint32 spellid = AI_VALUE2(uint32, "spell id", getName());
     if (spellid && sServerFacade.IsSpellReady(bot, spellid))
     {
-        return AI_VALUE2(Unit*, "cc target", getName()) && !AI_VALUE2(Unit*, "current cc target", getName());
+        return AI_VALUE(Unit*,"rti cc target")  || (AI_VALUE2(Unit*, "cc target", getName()) && !AI_VALUE2(Unit*, "current cc target", getName()));
     }
 
     return false;
@@ -814,7 +844,7 @@ bool InRaidFightTrigger::IsActive()
 bool GreaterBuffOnPartyTrigger::IsActive()
 {
     Unit* target = GetTarget();
-    return target && bot->IsInGroup(target) && BuffOnPartyTrigger::IsActive() && !ai->HasAura(lowerSpell, target, false, checkIsOwner);
+    return target && bot->IsInGroup(target);
 }
 
 bool TargetOfAttacker::IsActive()

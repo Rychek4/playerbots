@@ -70,6 +70,12 @@ public:
     BEGIN_RANGED_SPELL_ACTION(CastScorpidStingAction, "scorpid sting")
     END_SPELL_ACTION()
 
+    class MisdirectionOnPartyTankAction : public BuffOnTankAction
+    {
+    public:
+        MisdirectionOnPartyTankAction(PlayerbotAI* ai) : BuffOnTankAction(ai, "misdirection") {}
+    };
+
     class CastAspectOfTheMonkeyAction : public CastBuffSpellAction
     {
     public:
@@ -167,11 +173,15 @@ public:
         CastRapidFireAction(PlayerbotAI* ai) : CastBuffSpellAction(ai, "rapid fire") {}
     };
 
+#ifdef MANGOSBOT_TWO
     class CastKillCommandAction : public CastBuffSpellAction
     {
     public:
         CastKillCommandAction(PlayerbotAI* ai) : CastBuffSpellAction(ai, "kill command") {}
     };
+#else
+    SPELL_ACTION(CastKillCommandAction, "kill command");
+#endif
 
     class CastBlackArrow : public CastRangedDebuffSpellAction
     {

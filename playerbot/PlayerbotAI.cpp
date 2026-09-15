@@ -1,5 +1,6 @@
 #include "PlayerbotMgr.h"
 #include "playerbot/playerbot.h"
+#include "playerbot/bridge/Bridge.h"
 #include <stdarg.h>
 #include <iomanip>
 
@@ -384,7 +385,7 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
 #ifndef MANGOSBOT_TWO
     if (!bot->IsStopped() && !IsJumping() && !CanMove() && !bot->IsTaxiFlying() && !bot->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_FLEEING) && !bot->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_CONFUSED))
 #else
-    if (!bot->IsStopped() && !IsJumping() && !CanMove() && !bot->m_movementInfo.HasMovementFlag(MOVEFLAG_FALLING) && !bot->IsTaxiFlying() && !bot->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_FLEEING) && !bot->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_CONFUSED))
+    if (!bot->IsStopped() && !IsJumping() && !CanMove() && !bot->m_movementInfo.HasMovementFlag(MOVEFLAG_FALLING) && !bot->IsTaxiFlying() && !bot->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_FLEEING) && !bot->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_CONFUSED) && !bot->IsFreeFlying())
 #endif
     {
         StopMoving();
@@ -929,6 +930,8 @@ void PlayerbotAI::Unmount()
         if (bot->IsFlying())
         {
             bot->GetMotionMaster()->MoveFall();
+            if (bot->m_movementInfo.HasMovementFlag(MOVEFLAG_LEVITATING))
+                bot->m_movementInfo.RemoveMovementFlag(MOVEFLAG_LEVITATING);
         }
     }
 }
@@ -1231,13 +1234,30 @@ void PlayerbotAI::HandleTeleportAck()
         // add delay to simulate teleport delay
         SetAIInternalUpdateDelay(urand(1000, 2000));
 	}
-	else if (bot->IsBeingTeleportedFar())
-	{
-        bot->GetSession()->HandleMoveWorldportAckOpcode();
+    else if (bot->IsBeingTeleportedFar())
+    {
+        // guard BG race - bot-only fix for MapManager::CreateInstance assert
+        WorldLocation const& loc = bot->GetTeleportDest();
+        if (MapEntry const* mEntry = sMapStore.LookupEntry(loc.mapid))
+        {
+            if (mEntry->IsBattleGround())
+            {
+                uint32 bgId = bot->GetBattleGroundId();
+                if (!bgId || !sMapMgr.FindMap(loc.mapid, bgId))
+                {
+                    sLog.outError("PlayerbotAI::HandleTeleportAck: bot %s BG %u aborted bgId=%u", bot->GetName(), loc.mapid, bgId);
+                    bot->SetSemaphoreTeleportFar(false);
+                    Reset();
+                    if (IsRealPlayer())
+                        bot->SendHeartBeat();
+                    return;
+                }
+            }
+        }
 
-        // add delay to simulate teleport delay
+        bot->GetSession()->HandleMoveWorldportAckOpcode();
         SetAIInternalUpdateDelay(urand(2000, 5000));
-	}
+    }
 
     if (IsRealPlayer())
         bot->SendHeartBeat();
@@ -1531,6 +1551,8 @@ void PlayerbotAI::HandleCommand(uint32 type, const std::string& text, Player& fr
 
 void PlayerbotAI::HandleBotOutgoingPacket(const WorldPacket& packet)
 {
+    sBridge.OnBotPacket(bot, packet);
+
     //if (packet.empty())
     //    return;
 
@@ -1987,7 +2009,7 @@ int32 PlayerbotAI::CalculateGlobalCooldown(uint32 spellid)
         globalCooldown = spellEntry->StartRecoveryTime;
     }
 
-    return globalCooldown > 0 ? globalCooldown : sPlayerbotAIConfig.reactDelay;
+    return globalCooldown;
 }
 
 void PlayerbotAI::HandleMasterIncomingPacket(const WorldPacket& packet)
@@ -4174,15 +4196,30 @@ bool PlayerbotAI::CanCastSpell(uint32 spellid, Unit* target, uint8 effectMask, b
             }
         }
 
+        bool immune = target->IsImmuneToSpell(spellInfo, false, effectMask, bot);
         if (!damage)
         {
-            bool immune = target->IsImmuneToSpell(spellInfo, false, effectMask, bot);
             if (!immune)
             {
                 for (int32 i = EFFECT_INDEX_0; i <= EFFECT_INDEX_2; i++)
                     immune = target->IsImmuneToSpellEffect(spellInfo, SpellEffectIndex(i), false);
             }
 
+            if (immune)
+            {
+                if (checkResult)
+                {
+                    *checkResult = SPELL_FAILED_IMMUNE;
+                }
+
+                return false;
+            }
+        }
+        else
+        {
+            if (!immune)
+                immune = target->IsImmuneToDamage(GetSpellSchoolMask(spellInfo));
+                
             if (immune)
             {
                 if (checkResult)
@@ -4489,7 +4526,7 @@ uint8 PlayerbotAI::GetHealthPercent() const
 
 uint8 PlayerbotAI::GetManaPercent(const Unit& target) const
 {
-   return (static_cast<float>(target.GetPower(POWER_MANA)) / target.GetMaxPower(POWER_MANA)) * 100;
+   return target.GetPowerPercent();
 }
 
 uint8 PlayerbotAI::GetManaPercent() const
@@ -5435,10 +5472,10 @@ bool PlayerbotAI::RemoveAura(const std::string& name)
     return false;
 }
 
-bool PlayerbotAI::IsInterruptableSpellCasting(Unit* target, std::string spell, uint8 effectMask)
+bool PlayerbotAI::IsInterruptableSpellCasting(Unit* target, std::string spell)
 {
 	uint32 spellid = aiObjectContext->GetValue<uint32>("spell id", spell)->Get();
-	if (!spellid || !target->IsNonMeleeSpellCasted(true))
+	if (!spellid || !target->IsNonMeleeSpellCasted(true) || !target->IsInterruptible())
 		return false;
 
 	SpellEntry const *spellInfo = sServerFacade.LookupSpellInfo(spellid);
@@ -5446,17 +5483,18 @@ bool PlayerbotAI::IsInterruptableSpellCasting(Unit* target, std::string spell, u
 		return false;
 
 	for (uint8 i = EFFECT_INDEX_0; i <= EFFECT_INDEX_2; i++)
-	{
-		if ((spellInfo->InterruptFlags & SPELL_INTERRUPT_FLAG_COMBAT) && spellInfo->PreventionType == SPELL_PREVENTION_TYPE_SILENCE)
-			return true;
-
-		if ((spellInfo->Effect[i] == SPELL_EFFECT_INTERRUPT_CAST) &&
-            (!target->IsImmuneToSpell(spellInfo, true, effectMask, bot) || !target->IsImmuneToSpellEffect(spellInfo, SpellEffectIndex(i), true)))
-            return true;
-
-        if ((spellInfo->Effect[i] == SPELL_EFFECT_APPLY_AURA) && spellInfo->EffectApplyAuraName[i] == SPELL_AURA_MOD_SILENCE)
-            return true;
+    {
+        if (target->IsImmuneToSpell(spellInfo, false, (1 << SpellEffectIndex(i)), bot) || target->IsImmuneToSpellEffect(spellInfo, SpellEffectIndex(i), false))
+            return false;
 	}
+    for (uint8 i = EFFECT_INDEX_0; i <= EFFECT_INDEX_2; i++)
+    {
+        if (spellInfo->Effect[i] == SPELL_EFFECT_INTERRUPT_CAST)
+            return true;
+
+        if ((spellInfo->Effect[i] == SPELL_EFFECT_APPLY_AURA) && (spellInfo->EffectApplyAuraName[i] == SPELL_AURA_MOD_SILENCE || spellInfo->EffectApplyAuraName[i] == SPELL_AURA_MOD_STUN))
+            return true;
+    }
 
 	return false;
 }
@@ -7535,7 +7573,7 @@ std::list<Item*> PlayerbotAI::InventoryParseItems(std::string text, IterateItems
     else if (text.find("usage ") == 0)
     {
         FindItemUsageVisitor visitor(bot, ItemUsage(stoi(text.substr(6))));
-        VISIT_MASK(IterateItemsMask::ITERATE_ITEMS_IN_BAGS);
+        VISIT_MASK(mask == IterateItemsMask::ITERATE_ITEMS_IN_BANK ? IterateItemsMask::ITERATE_ITEMS_IN_BANK : IterateItemsMask::ITERATE_ITEMS_IN_BAGS);
     }
     else if (text == "tradeskill")
     {
@@ -8425,8 +8463,15 @@ void PlayerbotAI::StopMoving()
     if (bot->GetTransport())
         bot->m_movementInfo.SetMovementFlags(MOVEFLAG_ONTRANSPORT);
     else
+    {
+#ifndef MANGOSBOT_ZERO
+        if (!bot->IsFlying())
+            bot->m_movementInfo.SetMovementFlags(MOVEFLAG_NONE);
+#else
         bot->m_movementInfo.SetMovementFlags(MOVEFLAG_NONE);
-
+#endif        
+    }
+    
     bot->InterruptMoving(true);
     MovementInfo mInfo = bot->m_movementInfo;
     float x, y, z;

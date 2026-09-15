@@ -1,5 +1,6 @@
 #include "playerbot/playerbot.h"
 #include "playerbot/PlayerbotAIConfig.h"
+#include "playerbot/bridge/Bridge.h"
 #include "PlayerbotDbStore.h"
 #include "playerbot/PlayerbotFactory.h"
 #include "playerbot/RandomPlayerbotFactory.h"
@@ -217,6 +218,8 @@ void PlayerbotHolder::LogoutPlayerBot(uint32 guid, bool allowInstant, bool forDe
         if (!ai)
             return;
 
+        sBridge.OnBotLogout(bot);
+
         if (!sPlayerbotAIConfig.bExplicitDbStoreSave)
         {
            Group* group = bot->GetGroup();
@@ -412,6 +415,8 @@ void PlayerbotHolder::JoinChatChannels(Player* bot)
 
 void PlayerbotHolder::OnBotLogin(Player * const bot)
 {
+    sBridge.OnBotLogin(bot);
+
     if (!sPlayerbotAIConfig.enabled)
         return;
 
@@ -1002,6 +1007,8 @@ void PlayerbotMgr::HandleCommand(uint32 type, const std::string& text, uint32 la
 
 void PlayerbotMgr::HandleMasterIncomingPacket(const WorldPacket& packet)
 {
+    sBridge.OnMasterPacket(master, packet);
+
     ForEachPlayerbot([&](Player* bot)
     {
         bot->GetPlayerbotAI()->HandleMasterIncomingPacket(packet);
@@ -1031,6 +1038,8 @@ void PlayerbotMgr::HandleMasterIncomingPacket(const WorldPacket& packet)
 }
 void PlayerbotMgr::HandleMasterOutgoingPacket(const WorldPacket& packet)
 {
+    sBridge.OnMasterOutgoingPacket(master, packet);
+
    ForEachPlayerbot([&](Player* bot)
    {
         if (!bot->GetPlayerbotAI())

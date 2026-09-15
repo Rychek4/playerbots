@@ -14,7 +14,7 @@ namespace ai
     {
     public:
         MarkOfTheWildTrigger(PlayerbotAI* ai) : BuffTrigger(ai, "mark of the wild", 4) {}
-        virtual bool IsActive() override { return BuffTrigger::IsActive() &&  !ai->HasAura("gift of the wild", GetTarget()); }
+        virtual bool IsActive() override { return BuffTrigger::IsActive() && !ai->HasAura("gift of the wild", GetTarget()); }
     };
 
     class GiftOfTheWildOnPartyTrigger : public GreaterBuffOnPartyTrigger
@@ -23,15 +23,15 @@ namespace ai
         GiftOfTheWildOnPartyTrigger(PlayerbotAI* ai) : GreaterBuffOnPartyTrigger(ai, "gift of the wild", "mark of the wild", 4) {}
     };
 
-    class ThornsOnPartyTrigger : public BuffOnPartyTrigger
+    class ThornsOnPartyTrigger : public BuffOnTankTrigger
     {
     public:
-        ThornsOnPartyTrigger(PlayerbotAI* ai) : BuffOnPartyTrigger(ai, "thorns", 4) {}
+        ThornsOnPartyTrigger(PlayerbotAI* ai) : BuffOnTankTrigger(ai, "thorns", 4) {}
 
         virtual bool IsActive() override
         {
             Unit* target = GetTarget();
-            if (target && BuffOnPartyTrigger::IsActive() && (!target->IsPlayer() || !ai->IsRanged((Player*)target)))
+            if (target && BuffOnTankTrigger::IsActive() && (!target->IsPlayer() || !ai->IsRanged((Player*)target)))
             {
                 // Don't apply thorns if fire shield (conflict) is on the target
                 return !ai->HasAura("fire shield", target);
@@ -99,6 +99,13 @@ namespace ai
     {
     public:
         FaerieFireFeralTrigger(PlayerbotAI* ai) : DebuffTrigger(ai, "faerie fire (feral)") {}
+    };
+
+    class DemoralizingRoarTrigger : public DebuffTrigger
+    {
+    public:
+        DemoralizingRoarTrigger(PlayerbotAI* ai) : DebuffTrigger(ai, "demoralizing roar") {}
+        virtual bool IsActive() override { return DebuffTrigger::IsActive() && !ai->HasAura("demoralizing shout", GetTarget()); }
     };
 
     class BashInterruptSpellTrigger : public InterruptSpellTrigger

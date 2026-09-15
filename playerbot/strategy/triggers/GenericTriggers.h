@@ -306,7 +306,7 @@ namespace ai
     class RangedHighAoeTrigger : public AoeTrigger
     {
     public:
-        RangedHighAoeTrigger(PlayerbotAI* ai) : AoeTrigger(ai, 6) {}
+        RangedHighAoeTrigger(PlayerbotAI* ai) : AoeTrigger(ai, 5) {}
     };
 
     class RangedVeryHighAoeTrigger : public AoeTrigger
@@ -698,6 +698,13 @@ namespace ai
 	{
 	public:
         TankAssistTrigger(PlayerbotAI* ai) : NoAttackersTrigger(ai, "tank assist") {}
+		virtual bool IsActive() override;
+	};
+
+    class DpsAssistTrigger : public Trigger
+	{
+	public:
+        DpsAssistTrigger(PlayerbotAI* ai) : Trigger(ai, "dps assist", 2) {}
 		virtual bool IsActive() override;
 	};
 
@@ -1163,7 +1170,7 @@ namespace ai
             return target && AI_VALUE2(bool, "combat", "self target") && AI_VALUE2(float, "distance", "current target") <= 8.0f &&
                 (AI_VALUE2(uint8, "health", "self target") < sPlayerbotAIConfig.mediumHealth ||
                     AI_VALUE(uint8, "my attacker count") >= 3 ||
-                    target->IsNonMeleeSpellCasted(true));
+                    ai->IsInterruptableSpellCasting(target, "war stomp"));
         }
     };
 

@@ -203,7 +203,7 @@ void HunterAoeStrategy::InitCombatTriggers(std::list<TriggerNode*>& triggers)
         NextAction::array(0, new NextAction("explosive trap on target", ACTION_INTERRUPT), NULL)));
 
     triggers.push_back(new TriggerNode(
-        "ranged medium aoe",
+        "ranged high aoe",
         NextAction::array(0, new NextAction("volley", ACTION_HIGH + 3), NULL)));
 
     triggers.push_back(new TriggerNode(
@@ -545,6 +545,10 @@ void HunterStrategy::InitCombatTriggers(std::list<TriggerNode*>& triggers)
     triggers.push_back(new TriggerNode(
         "hunter's mark",
         NextAction::array(0, new NextAction("hunter's mark", ACTION_NORMAL + 6), NULL)));
+
+    triggers.push_back(new TriggerNode(
+        "arcane shot",
+        NextAction::array(0, new NextAction("arcane shot", ACTION_NORMAL + 2), NULL)));
 
     triggers.push_back(new TriggerNode(
         "kill command",
@@ -1013,6 +1017,10 @@ void HunterStrategy::InitCombatTriggers(std::list<TriggerNode*>& triggers)
         NextAction::array(0, new NextAction("hunter's mark", ACTION_NORMAL + 6), NULL)));
 
     triggers.push_back(new TriggerNode(
+        "kill command",
+        NextAction::array(0, new NextAction("kill command", ACTION_NORMAL + 6), NULL)));
+
+    triggers.push_back(new TriggerNode(
         "aimed shot",
         NextAction::array(0, new NextAction("aimed shot", ACTION_NORMAL + 2), NULL)));
 
@@ -1138,7 +1146,7 @@ void HunterAoeStrategy::InitCombatTriggers(std::list<TriggerNode*>& triggers)
         NextAction::array(0, new NextAction("explosive trap on target", ACTION_INTERRUPT), NULL)));
 
     triggers.push_back(new TriggerNode(
-        "ranged medium aoe",
+        "ranged high aoe",
         NextAction::array(0, new NextAction("volley", ACTION_HIGH + 3), NULL)));
 
     triggers.push_back(new TriggerNode(

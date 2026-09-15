@@ -7,6 +7,7 @@ env:
   BUILD_TYPE: Release
   REPO_DIR : ${{github.workspace}}
   BUILD_DIR: ${{github.workspace}}/bin/builddir
+  MODULE_DIR: ${{github.workspace}}/src/modules/PlayerBots
   BOOST_TOOLSET: "msvc"
   BOOST_VERSION: "1.83.0"
   BOOST_PLATFORM_VERSION: "2022"
@@ -19,7 +20,7 @@ jobs:
 
     strategy:
       matrix:
-        version: [classic, tbc, wotlk]
+        version: [classic]
         include:
           - os: windows-2022
             EXTRA_BUILD: "-DBUILD_PLAYERBOTS=ON"
@@ -31,6 +32,11 @@ jobs:
           repository: ${{github.repository_owner}}/mangos-${{matrix.version}}
           ref: master
           path: ${{env.REPO_DIR}}
+
+      - name: Checkout PlayerBots module (the commit under test)
+        uses: actions/checkout@v4
+        with:
+          path: src/modules/PlayerBots
 
       - name: Create Build Environment
         run: |
@@ -57,7 +63,7 @@ jobs:
       - name: Configure
         env:
           BOOST_ROOT: ${{ steps.install-boost.outputs.BOOST_ROOT }}
-        run: cmake -DBUILD_PLAYERBOTS=ON -DBoost_NO_BOOST_CMAKE=ON -B ${{env.BUILD_DIR}} -S ${{env.REPO_DIR}}
+        run: cmake -DBUILD_PLAYERBOTS=ON -DFETCHCONTENT_SOURCE_DIR_PLAYERBOTS=${{env.MODULE_DIR}} -DBoost_NO_BOOST_CMAKE=ON -B ${{env.BUILD_DIR}} -S ${{env.REPO_DIR}}
 
       - name: Build
         env:

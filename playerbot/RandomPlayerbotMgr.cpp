@@ -2,6 +2,7 @@
 
 #include "playerbot/playerbot.h"
 #include "playerbot/PlayerbotAIConfig.h"
+#include "playerbot/bridge/Bridge.h"
 #include "playerbot/PlayerbotFactory.h"
 #include "strategy/values/LastMovementValue.h"
 #include "Accounts/AccountMgr.h"
@@ -637,6 +638,14 @@ void RandomPlayerbotMgr::LogPlayerLocation()
             }
         }
     }
+}
+
+void RandomPlayerbotMgr::UpdateAI(uint32 elapsed)
+{
+    // World thread, before the maps update: the bridge drains its command
+    // queue and takes scene snapshots here.
+    sBridge.Update(elapsed);
+    PlayerbotAIBase::UpdateAI(elapsed);
 }
 
 void RandomPlayerbotMgr::UpdateAIInternal(uint32 elapsed, bool minimal)
@@ -1339,9 +1348,9 @@ uint32 RandomPlayerbotMgr::AddRandomBots()
 
         if(currentAllowedBotCount && sPlayerbotAIConfig.randomBotAutoCreate && !sPlayerbotAIConfig.useFixedClassRaceCounts)
 #ifdef MANGOSBOT_TWO
-            sLog.outError("Not enough random bot accounts available. Need %d more!!", (uint32)ceil(currentAllowedBotCount / 10));
+            sLog.outError("Not enough random bot accounts available. Need %d more!!", (uint32)ceil(currentAllowedBotCount / 10.0));
 #else
-            sLog.outError("Not enough random bot accounts available. Need %d more!!", (uint32)ceil(currentAllowedBotCount / 9));
+            sLog.outError("Not enough random bot accounts available. Need %d more!!", (uint32)ceil(currentAllowedBotCount / 9.0));
 #endif
       
     }
@@ -2157,6 +2166,25 @@ bool RandomPlayerbotMgr::AddRandomBot(uint32 bot)
     }
 
     return true;
+}
+
+bool RandomPlayerbotMgr::LoginRandomBot(uint32 bot)
+{
+    // "login" means "logging in right now"; ProcessBot clears it once it sees the
+    // bot in the world. A bot logged out before that leaves the flag behind, and
+    // AddRandomBot would then do nothing, so clear it for a bot that is offline.
+    if (!GetPlayerBot(bot) && GetEventValue(bot, "login"))
+        SetEventValue(bot, "login", 0, 0);
+    return AddRandomBot(bot);
+}
+
+void RandomPlayerbotMgr::LogoutRandomBot(uint32 bot)
+{
+    // The same bookkeeping ProcessBot does when it logs a bot out, done now.
+    currentBots.remove(bot);
+    SetEventValue(bot, "add", 0, 0);
+    SetEventValue(bot, "login", 0, 0);
+    LogoutPlayerBot(bot);
 }
 
 void RandomPlayerbotMgr::MovePlayerBot(uint32 guid, PlayerbotHolder* newHolder)
