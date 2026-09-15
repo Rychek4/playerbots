@@ -145,6 +145,8 @@ private:
     void WatchMember(Player* player);
     void WatchZone(Player* player);
     void WatchGroup(Player* real);
+    void EmitBotLogin(Player* bot);     // the bot.login event proper, once the bot is really in the world
+    void FlushPendingLogins();          // every world tick: emit for bots that have arrived since
     void BubbleScan();                  // every bubble interval: who entered or left each real player's bubble
     void Snapshot();                    // every snapshot interval: reconciliation scenes
     void ForgetTracking();
@@ -194,6 +196,7 @@ private:
     std::map<ObjectGuid, uint64> groupSignature_;                          // real player -> leader and members
     std::map<ObjectGuid, std::map<ObjectGuid, std::string>> bubble_;       // real player -> units around them
     std::set<ObjectGuid> bubbleReady_;                                     // real players whose bubble has a baseline
+    std::set<ObjectGuid> pendingLogins_;                                   // bots the module has that the core has not put in the world yet
 };
 
 #define sBridge Bridge::instance()

@@ -95,6 +95,7 @@ void Bridge::Update(uint32 diff)
         return;
 
     DrainCommands();
+    FlushPendingLogins();
 
     const bool haveClients = server_.ClientCount() > 0;
     if (!haveClients)

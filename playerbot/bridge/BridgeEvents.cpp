@@ -531,10 +531,25 @@ void Bridge::Snapshot()
 
 // Login hooks -------------------------------------------------------------------
 
+// PlayerbotHolder::OnBotLogin runs when the module has the bot, which can be
+// a tick before the core has added it to the world. A client that acts on
+// bot.login the moment it arrives then gets "is not online" from bot.place,
+// as happened on the first live run. So the event waits for IsInWorld and is
+// sent from the world tick if it has to.
 void Bridge::OnBotLogin(Player* bot)
 {
     if (!bot || !server_.IsRunning() || server_.ClientCount() == 0)
         return;
+    if (!bot->IsInWorld())
+    {
+        pendingLogins_.insert(bot->GetObjectGuid());
+        return;
+    }
+    EmitBotLogin(bot);
+}
+
+void Bridge::EmitBotLogin(Player* bot)
+{
     Json data;
     data["bot"] = PlayerRef(bot);
     PlayerbotAI* ai = bot->GetPlayerbotAI();
@@ -543,8 +558,34 @@ void Bridge::OnBotLogin(Player* bot)
     Emit(EV_BOT_LOGIN, data);
 }
 
+void Bridge::FlushPendingLogins()
+{
+    if (pendingLogins_.empty())
+        return;
+    if (server_.ClientCount() == 0)
+    {
+        pendingLogins_.clear();
+        return;
+    }
+    for (auto it = pendingLogins_.begin(); it != pendingLogins_.end();)
+    {
+        Player* bot = sObjectMgr.GetPlayer(*it);
+        if (!bot)                       // gone again before it ever arrived
+            it = pendingLogins_.erase(it);
+        else if (bot->IsInWorld())
+        {
+            EmitBotLogin(bot);
+            it = pendingLogins_.erase(it);
+        }
+        else
+            ++it;
+    }
+}
+
 void Bridge::OnBotLogout(Player* bot)
 {
+    if (bot)
+        pendingLogins_.erase(bot->GetObjectGuid());   // never announce a login that ended first
     if (!bot || !server_.IsRunning() || server_.ClientCount() == 0)
         return;
     Json data;
