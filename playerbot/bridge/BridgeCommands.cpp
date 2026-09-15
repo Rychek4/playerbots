@@ -73,6 +73,18 @@ Player* Bridge::FindOnlinePlayer(const std::string& rawName)
     return player && player->IsInWorld() ? player : nullptr;
 }
 
+// Speech never runs commands. A line handed to player.say enters the
+// session as typed input and the core's chat handler parses commands before
+// it broadcasts speech; bot.say goes through the bot's session the same way.
+// So text that begins with a command prefix is refused here, whoever asks,
+// before it reaches any session. Type game commands in the game.
+static void RequireSpeech(const std::string& text)
+{
+    const size_t first = text.find_first_not_of(" \t");
+    if (first != std::string::npos && (text[first] == '.' || text[first] == '!'))
+        throw BridgeCommandError("text begins with a command prefix; the bridge speaks, it does not run commands");
+}
+
 Player* Bridge::RequireOnlinePlayer(const std::string& name, const char* what)
 {
     if (Player* player = FindOnlinePlayer(name))
@@ -212,6 +224,7 @@ std::optional<Json> Bridge::CmdBotSay(const BridgeInbound&, const Json& args)
     Player* bot = RequireBot(RequireString(args, "bot"));
     PlayerbotAI* ai = bot->GetPlayerbotAI();
     const std::string text = RequireString(args, "text");
+    RequireSpeech(text);
     const std::string channel = OptionalString(args, "channel", "say");
     // likePlayer = true sends real chat through the bot's session, so other
     // players and bots hear it and the bridge sees it come back as a chat event.
@@ -236,6 +249,7 @@ std::optional<Json> Bridge::CmdNpcSay(const BridgeInbound&, const Json& args)
 {
     Creature* creature = FindCreature(args);
     const std::string text = RequireString(args, "text");
+    RequireSpeech(RequireString(args, "text"));
     const std::string kind = OptionalString(args, "kind", "say");
     const std::string to = OptionalString(args, "to");
     Player* target = to.empty() ? nullptr : RequireOnlinePlayer(to, "to");
@@ -587,6 +601,7 @@ std::optional<Json> Bridge::CmdPlayerSay(const BridgeInbound&, const Json& args)
 {
     Player* player = RequireOnlinePlayer(RequireString(args, "player"), "player");
     const std::string text = RequireString(args, "text");
+    RequireSpeech(text);
     const std::string channel = OptionalString(args, "channel", "say");
     uint32 type;
     if (channel == "say")          type = CHAT_MSG_SAY;
