@@ -185,6 +185,7 @@ private:
     // Characters made to order (BridgeCommands.cpp, "Cast characters")
     std::optional<Json> CmdBotCreate(const BridgeInbound& in, const Json& args);
     std::optional<Json> CmdBotDelete(const BridgeInbound& in, const Json& args);
+    std::optional<Json> CmdBotLevel(const BridgeInbound& in, const Json& args);
     static uint32 GetOrCreateCastAccount(std::string& error);
     static void RegisterCastAccount(uint32 accountId);
     static bool NeedsOutfit(Player* bot);

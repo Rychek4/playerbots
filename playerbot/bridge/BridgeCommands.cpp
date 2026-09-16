@@ -1180,6 +1180,59 @@ std::optional<Json> Bridge::CmdBotDelete(const BridgeInbound&, const Json& args)
     return result;
 }
 
+std::optional<Json> Bridge::CmdBotLevel(const BridgeInbound&, const Json& args)
+{
+    // Re-level a made-to-order character in place: a chapter needs it a little
+    // older, or an early random pass left it wrong. Cast characters only, and
+    // it must be in the world (add it, or bot.login it, first).
+    std::string name = RequireString(args, "name");
+    if (!normalizePlayerName(name))
+        throw BridgeCommandError("'" + name + "' is not a valid character name");
+    const ObjectGuid guid = sObjectMgr.GetPlayerGuidByName(name);
+    if (guid.IsEmpty())
+        throw BridgeCommandError("no character named '" + name + "'");
+    if (!sPlayerbotAIConfig.IsInCastAccountList(sObjectMgr.GetPlayerAccountIdByGUID(guid)))
+        throw BridgeCommandError("'" + name + "' is not a cast character (only characters made by bot.create can be re-levelled here)");
+
+    const uint32 maxLevel = sWorld.getConfig(CONFIG_UINT32_MAX_PLAYER_LEVEL);
+    const uint32 level = OptionalUnsigned(args, "level", 0);
+    if (level < 1 || level > maxLevel)
+        throw BridgeCommandError("argument 'level' must be between 1 and " + std::to_string(maxLevel));
+
+    Player* bot = FindOnlinePlayer(name);
+    if (!bot)
+        throw BridgeCommandError("'" + name + "' is not in the world; add it (/add) or bot.login it first, then set its level");
+    PlayerbotAI* ai = bot->GetPlayerbotAI();
+    if (!ai || ai->IsRealPlayer())
+        throw BridgeCommandError("'" + name + "' is not a bot");
+
+    const uint32 was = bot->GetLevel();
+    bot->SetLevel(level);
+    bot->SetUInt32Value(PLAYER_XP, 0);
+    bot->InitStatsForLevel(true);
+#ifdef MANGOSBOT_ZERO
+    bot->InitTaxiNodes();
+#else
+    bot->InitTaxiNodesForLevel();
+#endif
+    bot->InitTalentForLevel();
+    bot->InitPrimaryProfessions();
+    bot->learnDefaultSpells();
+
+    // Spells and gear the level knows, without touching the level again.
+    PlayerbotFactory factory(bot, level);
+    factory.Randomize(true, false);
+    ai->ResetStrategies();
+
+    sLog.outString("Bridge: re-levelled %s from %u to %u", name.c_str(), was, level);
+    Json result;
+    result["unit"] = PlayerRef(bot);
+    result["name"] = name;
+    result["level"] = level;
+    result["was"] = was;
+    return result;
+}
+
 bool Bridge::NeedsOutfit(Player* bot)
 {
     if (!bot || !sPlayerbotAIConfig.IsCastBot(bot->GetGUIDLow()))

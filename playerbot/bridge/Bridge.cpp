@@ -37,6 +37,7 @@ Bridge::Bridge()
     handlers_["weather"] = &Bridge::CmdWeather;
     handlers_["bot.create"] = &Bridge::CmdBotCreate;
     handlers_["bot.delete"] = &Bridge::CmdBotDelete;
+    handlers_["bot.level"] = &Bridge::CmdBotLevel;
 }
 
 Bridge::~Bridge()
