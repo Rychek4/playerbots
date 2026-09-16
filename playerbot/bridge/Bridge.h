@@ -191,6 +191,7 @@ private:
     std::optional<Json> CmdBotEmote(const BridgeInbound& in, const Json& args);
     std::optional<Json> CmdBotStance(const BridgeInbound& in, const Json& args);
     std::optional<Json> CmdBotFace(const BridgeInbound& in, const Json& args);
+    std::optional<Json> CmdQuestNearby(const BridgeInbound& in, const Json& args);
     static uint32 GetOrCreateCastAccount(std::string& error);
     static void RegisterCastAccount(uint32 accountId);
     static bool NeedsOutfit(Player* bot);

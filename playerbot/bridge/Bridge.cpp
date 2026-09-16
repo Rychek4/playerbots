@@ -42,6 +42,7 @@ Bridge::Bridge()
     handlers_["bot.emote"] = &Bridge::CmdBotEmote;
     handlers_["bot.stance"] = &Bridge::CmdBotStance;
     handlers_["bot.face"] = &Bridge::CmdBotFace;
+    handlers_["quest.nearby"] = &Bridge::CmdQuestNearby;
 }
 
 Bridge::~Bridge()

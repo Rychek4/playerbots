@@ -20,6 +20,9 @@
 #include "Entities/Player.h"
 #include "Globals/ObjectAccessor.h"
 #include "Globals/ObjectMgr.h"
+#include "Grids/CellImpl.h"
+#include "Grids/GridNotifiers.h"
+#include "Grids/GridNotifiersImpl.h"
 #include "Maps/Map.h"
 #include "Maps/MapManager.h"
 #include "Database/DatabaseEnv.h"
@@ -354,6 +357,86 @@ std::optional<Json> Bridge::CmdSceneGet(const BridgeInbound&, const Json& args)
         center = reals.front();
     }
     return BuildScene(center);
+}
+
+// Quests ------------------------------------------------------------------------
+//
+// What the game knows about work close by, for a scene to point at: quests
+// the player could take from givers in view, and complete ones a giver in
+// view would take. Facts only; nothing is accepted or handed out here.
+
+std::optional<Json> Bridge::CmdQuestNearby(const BridgeInbound&, const Json& args)
+{
+    const std::string name = OptionalString(args, "player");
+    Player* player = nullptr;
+    if (!name.empty())
+        player = RequireOnlinePlayer(name, "player");
+    else
+    {
+        std::vector<Player*> reals = RealPlayersOnline();
+        if (reals.empty())
+            throw BridgeCommandError("no real player is online; pass 'player'");
+        player = reals.front();
+    }
+    const float radius = sPlayerbotAIConfig.bridgeSceneRadius > 0.0f ? sPlayerbotAIConfig.bridgeSceneRadius : 40.0f;
+    std::list<Unit*> units;
+    MaNGOS::AnyUnitInObjectRangeCheck check(player, radius);
+    MaNGOS::UnitListSearcher<MaNGOS::AnyUnitInObjectRangeCheck> searcher(units, check);
+    Cell::VisitAllObjects(player, searcher, radius);
+
+    Json offered = Json::array();
+    Json turnIn = Json::array();
+    const size_t most = 8;
+    for (Unit* unit : units)
+    {
+        if (unit->GetTypeId() != TYPEID_UNIT || !unit->IsAlive())
+            continue;
+        if (!(unit->GetUInt32Value(UNIT_NPC_FLAGS) & UNIT_NPC_FLAG_QUESTGIVER))
+            continue;
+        Creature* giver = static_cast<Creature*>(unit);
+        const float dist = player->GetDistance(giver);
+
+        QuestRelationsMapBounds offers = sObjectMgr.GetCreatureQuestRelationsMapBounds(giver->GetEntry());
+        for (auto it = offers.first; it != offers.second && offered.size() < most; ++it)
+        {
+            Quest const* quest = sObjectMgr.GetQuestTemplate(it->second);
+            if (!quest)
+                continue;
+            if (player->GetQuestStatus(quest->GetQuestId()) != QUEST_STATUS_NONE || player->GetQuestRewardStatus(quest->GetQuestId()))
+                continue;
+            if (!player->CanTakeQuest(quest, false) || !player->CanAddQuest(quest, false))
+                continue;
+            Json lead;
+            lead["quest_id"] = quest->GetQuestId();
+            lead["title"] = quest->GetTitle();
+            lead["level"] = quest->GetQuestLevel();
+            lead["giver"] = UnitRef(giver);
+            lead["dist"] = dist;
+            offered.push_back(lead);
+        }
+
+        QuestRelationsMapBounds takes = sObjectMgr.GetCreatureQuestInvolvedRelationsMapBounds(giver->GetEntry());
+        for (auto it = takes.first; it != takes.second && turnIn.size() < most; ++it)
+        {
+            Quest const* quest = sObjectMgr.GetQuestTemplate(it->second);
+            if (!quest || player->GetQuestStatus(quest->GetQuestId()) != QUEST_STATUS_COMPLETE)
+                continue;
+            if (!player->CanRewardQuest(quest, false))
+                continue;
+            Json lead;
+            lead["quest_id"] = quest->GetQuestId();
+            lead["title"] = quest->GetTitle();
+            lead["level"] = quest->GetQuestLevel();
+            lead["taker"] = UnitRef(giver);
+            lead["dist"] = dist;
+            turnIn.push_back(lead);
+        }
+    }
+    Json result;
+    result["player"] = PlayerRef(player);
+    result["offered"] = offered;
+    result["turn_in"] = turnIn;
+    return result;
 }
 
 // Cast --------------------------------------------------------------------------
