@@ -611,8 +611,15 @@ std::optional<Json> Bridge::CmdBotPlace(const BridgeInbound&, const Json& args)
         Player* anchor = RequireOnlinePlayer(nearName, "near");
         const float distance = float(OptionalNumber(args, "distance", 4.0));
         const float angle = float(OptionalNumber(args, "angle", 0.0)) * M_PI_F / 180.0f;   // from where the anchor faces; 0 = in front
-        anchor->GetClosePoint(x, y, z, bot->GetObjectBoundingRadius(), distance, angle, bot);
+        // No searcher: the core's near-point search clamps the height on the
+        // searcher's own map, and a bot still on another continent (or not yet
+        // in the world) gets that continent's ground under this one's sky. Two
+        // strangers were put seventy yards under Northshire that way. Without a
+        // searcher the ground is read from the anchor's map, the one that matters.
+        anchor->GetClosePoint(x, y, z, bot->GetObjectBoundingRadius(), distance, angle);
         map = anchor->GetMapId();
+        if (z <= INVALID_HEIGHT || std::abs(z - anchor->GetPositionZ()) > 15.0f)
+            z = anchor->GetPositionZ();   // a bad lookup is worse than the anchor's own height
         o = MapManager::NormalizeOrientation(std::atan2(anchor->GetPositionY() - y, anchor->GetPositionX() - x));   // facing the anchor
     }
     else
