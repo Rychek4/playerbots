@@ -1287,6 +1287,23 @@ std::optional<Json> Bridge::CmdBotEmote(const BridgeInbound&, const Json& args)
     return result;
 }
 
+std::optional<Json> Bridge::CmdBotFace(const BridgeInbound&, const Json& args)
+{
+    // Turn to face another character. Two strangers talking to each other
+    // look at each other; left alone they both face whoever placed them.
+    Player* bot = RequireBot(RequireString(args, "bot"));
+    Player* target = RequireOnlinePlayer(RequireString(args, "target"), "target");
+    if (target == bot)
+        throw BridgeCommandError("a character cannot face itself");
+    if (target->GetMapId() != bot->GetMapId())
+        throw BridgeCommandError("'" + std::string(target->GetName()) + "' is on another map");
+    bot->SetFacingToObject(target);
+    Json result;
+    result["unit"] = PlayerRef(bot);
+    result["target"] = PlayerRef(target);
+    return result;
+}
+
 std::optional<Json> Bridge::CmdBotStance(const BridgeInbound&, const Json& args)
 {
     Player* bot = RequireBot(RequireString(args, "bot"));
