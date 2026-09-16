@@ -2291,8 +2291,11 @@ bool RandomPlayerbotMgr::ProcessBot(uint32 bot)
         if (ai && !ai->HasStrategy("debug", BotState::BOT_STATE_NON_COMBAT))
             ai->GetAiObjectContext()->ClearExpiredValues();
 
-        //Randomize/teleport bot
-        if (!sPlayerbotAIConfig.disableRandomLevels && !castBot)
+        //Randomize/teleport bot. A character the bridge logged in for a scene
+        //keeps its level and its place; the first live session cast a level-1
+        //stranger who arrived as a level 42 because this ran between her
+        //login and her placement.
+        if (!sPlayerbotAIConfig.disableRandomLevels && !castBot && !sBridge.IsRequestedLogin(bot))
         {
             if (player->GetGroup() || player->IsTaxiFlying())
                 return false;

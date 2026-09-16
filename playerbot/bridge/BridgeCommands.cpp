@@ -14,6 +14,7 @@
 #include "playerbot/PlayerbotMgr.h"
 #include "playerbot/RandomPlayerbotMgr.h"
 #include "playerbot/playerbot.h"
+#include "playerbot/strategy/Event.h"
 
 #include "Entities/Creature.h"
 #include "Entities/Player.h"
@@ -183,10 +184,64 @@ std::optional<Json> Bridge::CmdBotAdd(const BridgeInbound&, const Json& args)
     if (!mgr)
         throw BridgeCommandError("master cannot control bots (no bot manager on that player)");
     // Same path as the in-game ".bot add" command, ownership rules included.
-    std::list<std::string> messages = mgr->HandlePlayerbotCommand("add " + RequireString(args, "bot"), master);
+    std::string name = RequireString(args, "bot");
+    std::list<std::string> messages = mgr->HandlePlayerbotCommand("add " + name, master);
+    // For a character on a random-bot or cast account the module's add only
+    // logs it in; it stands in the world with no master until something puts
+    // it in the player's group. The first live session found Ansel like that.
+    // The bridge finishes the job on the world tick, once the character is
+    // in the world with its AI: master set, group joined, bot.login announced.
+    if (normalizePlayerName(name))
+    {
+        const ObjectGuid guid = sObjectMgr.GetPlayerGuidByName(name);
+        if (!guid.IsEmpty() && sPlayerbotAIConfig.IsInRandomAccountList(sObjectMgr.GetPlayerAccountIdByGUID(guid)))
+            pendingAttach_[guid] = std::make_pair(master->GetObjectGuid(), WorldTimer::getMSTime() + 30000);
+    }
     Json result;
     result["messages"] = messages;
     return result;
+}
+
+void Bridge::FlushPendingAttach()
+{
+    if (pendingAttach_.empty())
+        return;
+    const uint32 now = WorldTimer::getMSTime();
+    for (auto it = pendingAttach_.begin(); it != pendingAttach_.end();)
+    {
+        const ObjectGuid guid = it->first;
+        Player* master = sObjectMgr.GetPlayer(it->second.first);
+        Player* bot = sObjectMgr.GetPlayer(guid);
+        PlayerbotAI* ai = bot ? bot->GetPlayerbotAI() : nullptr;
+        if (!master || !master->IsInWorld())
+        {
+            it = pendingAttach_.erase(it);
+            continue;
+        }
+        if (!bot || !bot->IsInWorld() || !ai)
+        {
+            if (int32(it->second.second - now) < 0)
+            {
+                sLog.outString("Bridge: gave up waiting for %s to log in for %s", GuidString(guid).c_str(), master->GetName());
+                it = pendingAttach_.erase(it);
+            }
+            else
+                ++it;
+            continue;
+        }
+        // The same three steps a pool bot goes through when it accepts a
+        // real player's group invitation.
+        if (ai->GetMaster() != master)
+        {
+            ai->SetMaster(master);
+            ai->ResetStrategies();
+        }
+        if (!bot->GetGroup() || bot->GetGroup() != master->GetGroup())
+            ai->DoSpecificAction("join", Event("bridge", "", master));
+        sLog.outString("Bridge: %s is now %s's companion", bot->GetName(), master->GetName());
+        EmitBotLogin(bot);   // it has a master now, so this is a client's business
+        it = pendingAttach_.erase(it);
+    }
 }
 
 std::optional<Json> Bridge::CmdBotRemove(const BridgeInbound&, const Json& args)

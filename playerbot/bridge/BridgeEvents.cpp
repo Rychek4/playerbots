@@ -568,7 +568,14 @@ bool Bridge::Announces(Player* bot) const
         return false;
     PlayerbotAI* ai = bot->GetPlayerbotAI();
     if (ai && ai->GetMaster())
-        return true;
+    {
+        // A pool bot grouped under another pool bot has a master too; the
+        // first real session showed twenty-eight of those "logging out" at
+        // shutdown. Only a real player's bots are anyone's business.
+        PlayerbotAI* masterAi = ai->GetMaster()->GetPlayerbotAI();
+        if (!masterAi || masterAi->IsRealPlayer())
+            return true;
+    }
     const ObjectGuid guid = bot->GetObjectGuid();
     return tracked_.count(guid) > 0 || requestedLogins_.count(guid) > 0;
 }
@@ -797,7 +804,11 @@ void Bridge::ParseChat(Player* receiver, const WorldPacket& packet)
     p >> textLen >> text;
 
     const bool monster = IsMonsterChat(type);
-    const std::string senderKey = monster ? senderName : GuidString(sender);
+    // A whisper reaches the bridge twice when both ends are hooked: the
+    // recipient's copy names the speaker, the speaker's own copy (INFORM)
+    // names the recipient. Key both on the speaker so the second is dropped.
+    const ObjectGuid speaker = type == CHAT_MSG_WHISPER_INFORM ? receiver->GetObjectGuid() : sender;
+    const std::string senderKey = monster ? senderName : GuidString(speaker);
     if (IsDuplicate(std::string("chat|") + channel + "|" + senderKey + "|" + text))
         return;
 

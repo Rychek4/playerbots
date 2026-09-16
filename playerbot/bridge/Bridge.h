@@ -104,6 +104,10 @@ public:
     // Cast accounts (bot.create). Called from Start(); safe to call again.
     void LoadCastAccounts();
 
+    // A character a client logged in through bot.login. The random-bot manager
+    // leaves such a character's level and place alone while the request stands.
+    bool IsRequestedLogin(uint32 counter) const { return requestedLogins_.count(ObjectGuid(HIGHGUID_PLAYER, counter)) > 0; }
+
     // Thread-safe. Wraps data in the event envelope and broadcasts it.
     void Emit(const char* name, Json data);
 
@@ -183,6 +187,7 @@ private:
     static bool NeedsOutfit(Player* bot);
     void OutfitOnArrival(Player* bot);  // spells and gear for the level it was made at, once it stands in the world with its AI
     void FlushPendingOutfits();         // every world tick, before pending logins are announced
+    void FlushPendingAttach();          // every world tick: give bot.add's characters their master once they stand in the world
 
     // Command helpers
     static Player* FindOnlinePlayer(const std::string& name);
@@ -211,6 +216,7 @@ private:
     std::set<ObjectGuid> pendingLogins_;                                   // bots the module has that the core has not put in the world yet
     std::set<ObjectGuid> requestedLogins_;                                 // bots a client logged in through bot.login; announced even without a master
     std::set<ObjectGuid> pendingOutfits_;                                  // made-to-order bots that still need their level's spells and gear; announced after
+    std::map<ObjectGuid, std::pair<ObjectGuid, uint32>> pendingAttach_;    // bot.add on a pool or cast character: bot -> (master, deadline ms)
 };
 
 #define sBridge Bridge::instance()
