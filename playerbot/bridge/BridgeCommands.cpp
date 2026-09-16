@@ -633,6 +633,8 @@ std::optional<Json> Bridge::CmdBotPlace(const BridgeInbound&, const Json& args)
             throw BridgeCommandError("not a valid position");
     }
 
+    if (bot->isAFK())
+        bot->ToggleAFK();   // nobody wants <AFK> over the head of someone who just walked up
     if (!bot->TeleportTo(map, x, y, z, o))
         throw BridgeCommandError("the server refused the teleport");
 

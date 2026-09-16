@@ -5956,6 +5956,12 @@ ActivePiorityType PlayerbotAI::GetPriorityType()
     if (sPlayerbotAIConfig.disableActivityPriorities || HasRealPlayerMaster())
         return ActivePiorityType::HAS_REAL_PLAYER_MASTER;
 
+    // A character a bridge client asked for by name is on the narrator's stage: it
+    // walks, gestures and speaks on request, so it is as active as one with a real
+    // master, and the idle rule below never marks it away.
+    if (sBridge.IsRequestedLogin(bot->GetGUIDLow()))
+        return ActivePiorityType::HAS_REAL_PLAYER_MASTER;
+
     //Self bot in a group with a bot master.
     if (IsRealPlayer())
         return ActivePiorityType::IS_REAL_PLAYER;

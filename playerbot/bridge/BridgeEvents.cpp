@@ -621,6 +621,10 @@ void Bridge::EmitBotLogin(Player* bot)
 {
     if (!Announces(bot))
         return;
+    // A pool bot idles as <AFK> between the module's activity checks; a
+    // character announced to a client is about to be looked at.
+    if (bot->isAFK())
+        bot->ToggleAFK();
     Json data;
     data["bot"] = PlayerRef(bot);
     PlayerbotAI* ai = bot->GetPlayerbotAI();
