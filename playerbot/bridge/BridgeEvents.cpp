@@ -538,9 +538,19 @@ void Bridge::Snapshot()
 // sent from the world tick if it has to.
 void Bridge::OnBotLogin(Player* bot)
 {
-    if (!bot || !server_.IsRunning() || server_.ClientCount() == 0)
+    if (!bot || !server_.IsRunning())
         return;
-    if (!bot->IsInWorld())
+    // A character made to order arrives with the level it was given and the
+    // spells and gear of a level 1. Its outfit is finished on the world tick,
+    // once the module has given it an AI, and the bot.login event waits for
+    // that: by the time a client hears of it, the character is complete and
+    // nothing the client sets on it afterwards is reset by the outfitting.
+    const bool outfitting = NeedsOutfit(bot);
+    if (outfitting)
+        pendingOutfits_.insert(bot->GetObjectGuid());
+    if (server_.ClientCount() == 0)
+        return;
+    if (!bot->IsInWorld() || outfitting)
     {
         pendingLogins_.insert(bot->GetObjectGuid());
         return;
@@ -589,7 +599,7 @@ void Bridge::FlushPendingLogins()
         Player* bot = sObjectMgr.GetPlayer(*it);
         if (!bot)                       // gone again before it ever arrived
             it = pendingLogins_.erase(it);
-        else if (bot->IsInWorld())
+        else if (bot->IsInWorld() && pendingOutfits_.count(*it) == 0)
         {
             EmitBotLogin(bot);
             it = pendingLogins_.erase(it);
@@ -602,7 +612,10 @@ void Bridge::FlushPendingLogins()
 void Bridge::OnBotLogout(Player* bot)
 {
     if (bot)
+    {
         pendingLogins_.erase(bot->GetObjectGuid());   // never announce a login that ended first
+        pendingOutfits_.erase(bot->GetObjectGuid());  // it will be outfitted next time it arrives
+    }
     if (!bot || !server_.IsRunning() || server_.ClientCount() == 0)
         return;
     const bool announce = Announces(bot);

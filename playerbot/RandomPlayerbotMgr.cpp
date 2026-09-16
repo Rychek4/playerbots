@@ -1201,6 +1201,9 @@ uint32 RandomPlayerbotMgr::AddRandomBots()
             {
                 uint32 accountId = *i;
 
+                if (sPlayerbotAIConfig.IsInCastAccountList(accountId))
+                    continue;   // the bridge's made-to-order characters log in when asked, never as pool filler
+
                 std::unique_ptr<QueryResult> result;
 
                 if (noCriteria == 2)
@@ -2209,8 +2212,13 @@ bool RandomPlayerbotMgr::ProcessBot(uint32 bot)
     bool botsAllowedInWorld = !sPlayerbotAIConfig.randomBotLoginWithPlayer || (!players.empty() && sWorld.GetActiveSessionCount() > 0);
 
     bool isValid = true;
-   
-    if (sPlayerbotAIConfig.randomBotTimedLogout && !GetEventValue(bot, "add") && !sPlayerbotAIConfig.asyncBotLogin) // RandomBotInWorldTime is expired.
+
+    // A character the bridge made to order (a cast account) is logged in and
+    // out by whoever asked for it; the random manager neither times it out
+    // nor re-rolls, teleports or re-strategises it below.
+    const bool castBot = sPlayerbotAIConfig.IsCastBot(bot);
+
+    if (sPlayerbotAIConfig.randomBotTimedLogout && !castBot && !GetEventValue(bot, "add") && !sPlayerbotAIConfig.asyncBotLogin) // RandomBotInWorldTime is expired.
         isValid = false;
     else if(!botsAllowedInWorld)                                               // Logout if all players logged out
         isValid = false;
@@ -2284,7 +2292,7 @@ bool RandomPlayerbotMgr::ProcessBot(uint32 bot)
             ai->GetAiObjectContext()->ClearExpiredValues();
 
         //Randomize/teleport bot
-        if (!sPlayerbotAIConfig.disableRandomLevels)
+        if (!sPlayerbotAIConfig.disableRandomLevels && !castBot)
         {
             if (player->GetGroup() || player->IsTaxiFlying())
                 return false;

@@ -101,6 +101,9 @@ public:
     void OnBotLogin(Player* bot);
     void OnBotLogout(Player* bot);
 
+    // Cast accounts (bot.create). Called from Start(); safe to call again.
+    void LoadCastAccounts();
+
     // Thread-safe. Wraps data in the event envelope and broadcasts it.
     void Emit(const char* name, Json data);
 
@@ -172,6 +175,14 @@ private:
     std::optional<Json> CmdBotStrategy(const BridgeInbound& in, const Json& args);
     std::optional<Json> CmdPlayerSay(const BridgeInbound& in, const Json& args);
     std::optional<Json> CmdWeather(const BridgeInbound& in, const Json& args);
+    // Characters made to order (BridgeCommands.cpp, "Cast characters")
+    std::optional<Json> CmdBotCreate(const BridgeInbound& in, const Json& args);
+    std::optional<Json> CmdBotDelete(const BridgeInbound& in, const Json& args);
+    static uint32 GetOrCreateCastAccount(std::string& error);
+    static void RegisterCastAccount(uint32 accountId);
+    static bool NeedsOutfit(Player* bot);
+    void OutfitOnArrival(Player* bot);  // spells and gear for the level it was made at, once it stands in the world with its AI
+    void FlushPendingOutfits();         // every world tick, before pending logins are announced
 
     // Command helpers
     static Player* FindOnlinePlayer(const std::string& name);
@@ -199,6 +210,7 @@ private:
     std::set<ObjectGuid> bubbleReady_;                                     // real players whose bubble has a baseline
     std::set<ObjectGuid> pendingLogins_;                                   // bots the module has that the core has not put in the world yet
     std::set<ObjectGuid> requestedLogins_;                                 // bots a client logged in through bot.login; announced even without a master
+    std::set<ObjectGuid> pendingOutfits_;                                  // made-to-order bots that still need their level's spells and gear; announced after
 };
 
 #define sBridge Bridge::instance()

@@ -35,6 +35,8 @@ Bridge::Bridge()
     handlers_["bot.strategy"] = &Bridge::CmdBotStrategy;
     handlers_["player.say"] = &Bridge::CmdPlayerSay;
     handlers_["weather"] = &Bridge::CmdWeather;
+    handlers_["bot.create"] = &Bridge::CmdBotCreate;
+    handlers_["bot.delete"] = &Bridge::CmdBotDelete;
 }
 
 Bridge::~Bridge()
@@ -44,6 +46,7 @@ Bridge::~Bridge()
 
 void Bridge::Start()
 {
+    LoadCastAccounts();   // whether or not the socket opens: the module's ownership rules need the list
     if (!sPlayerbotAIConfig.enabled || sPlayerbotAIConfig.bridgePort <= 0)
     {
         if (server_.IsRunning())
@@ -95,6 +98,7 @@ void Bridge::Update(uint32 diff)
         return;
 
     DrainCommands();
+    FlushPendingOutfits();
     FlushPendingLogins();
 
     const bool haveClients = server_.ClientCount() > 0;

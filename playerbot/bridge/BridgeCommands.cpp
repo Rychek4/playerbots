@@ -407,9 +407,23 @@ namespace
 
 std::optional<Json> Bridge::CmdBotRoster(const BridgeInbound&, const Json& args)
 {
-    std::list<uint32> const& accounts = sPlayerbotAIConfig.randomBotAccounts;
+    // The pool by default; with cast=true, only the characters bot.create made.
+    // The two never mix: a made-to-order figure is not a walk-on.
+    const bool wantCast = OptionalBool(args, "cast", false);
+    std::list<uint32> accounts;
+    for (uint32 accountId : sPlayerbotAIConfig.randomBotAccounts)
+        if (sPlayerbotAIConfig.IsInCastAccountList(accountId) == wantCast)
+            accounts.push_back(accountId);
     if (accounts.empty())
+    {
+        if (wantCast)
+        {
+            Json empty;
+            empty["bots"] = Json::array();
+            return empty;
+        }
         throw BridgeCommandError("no random bot accounts exist; the module creates them on first start");
+    }
 
     std::ostringstream where;
     where << "account IN (";
@@ -685,4 +699,485 @@ std::optional<Json> Bridge::CmdWeather(const BridgeInbound&, const Json& args)
     result["grade"] = grade;
     result["permanent"] = permanent;
     return result;
+}
+
+// Cast characters ----------------------------------------------------------------
+//
+// bot.create makes a character to order: a name, a race, a class, a gender, a
+// level, and optionally a talent path, a gear quality and a look. It goes on a
+// cast account (AiPlayerbot.Bridge.CastAccountPrefix), which counts as a
+// random-bot account for the module's ownership rules - a real player may add
+// it, bot.login may log it in - but which the random-bot manager leaves alone:
+// no re-rolled level, no wandering teleport, no timed logout, no login of its
+// own accord. The character is created offline the way the module's own
+// `.bot create` does it, with the core's name rules enforced first; its spells
+// and gear for the level are finished the first time it stands in the world,
+// before the bot.login event announces it.
+//
+// This is still not a console. The only thing it can make is a player
+// character on an account the module owns, at or below the realm's level cap.
+
+#include "playerbot/ChatHelper.h"
+#include "playerbot/PlayerbotFactory.h"
+#include "playerbot/Talentspec.h"
+#include "playerbot/strategy/actions/ChangeTalentsAction.h"
+
+#include "Accounts/AccountMgr.h"
+#include "World/World.h"
+
+#include <cctype>
+#include <random>
+
+using namespace ai;   // TalentPath, ChatHelper, ChangeTalentsAction, BotRoles
+
+namespace
+{
+    uint32 MaxCharactersPerAccount()
+    {
+#ifdef MANGOSBOT_TWO
+        return 10;
+#else
+        return 9;
+#endif
+    }
+
+    std::string Lower(std::string text)
+    {
+        for (char& c : text)
+            c = char(std::tolower(static_cast<unsigned char>(c)));
+        return text;
+    }
+
+    bool AllDigits(const std::string& text)
+    {
+        if (text.empty())
+            return false;
+        for (char c : text)
+            if (!std::isdigit(static_cast<unsigned char>(c)))
+                return false;
+        return true;
+    }
+
+    std::string RandomPassword()
+    {
+        static const char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        std::string password;
+        for (int i = 0; i < 16; ++i)
+            password += alphabet[urand(0, sizeof(alphabet) - 2)];
+        return password;
+    }
+
+    // The module's premade talent paths for a class, by name. "affliction"
+    // finds "pve dps affli" the way a person would: an exact name first, then
+    // a path whose name contains the query, then a path with a word the query
+    // begins with. PvE paths are listed first in the config, so they win ties.
+    TalentPath* FindTalentPath(uint8 cls, const std::string& query)
+    {
+        std::vector<TalentPath>& paths = sPlayerbotAIConfig.classSpecs[cls].talentPath;
+        const std::string q = Lower(query);
+        for (TalentPath& path : paths)
+            if (Lower(path.name) == q)
+                return &path;
+        for (TalentPath& path : paths)
+            if (Lower(path.name).find(q) != std::string::npos)
+                return &path;
+        for (TalentPath& path : paths)
+        {
+            std::istringstream words(Lower(path.name));
+            std::string word;
+            while (words >> word)
+                if (word.size() >= 4 && q.rfind(word, 0) == 0)
+                    return &path;
+        }
+        return nullptr;
+    }
+
+    std::string TalentPathNames(uint8 cls)
+    {
+        std::string names;
+        for (TalentPath& path : sPlayerbotAIConfig.classSpecs[cls].talentPath)
+            names += (names.empty() ? "" : ", ") + path.name;
+        return names.empty() ? std::string("none configured") : names;
+    }
+
+    uint32 GearQuality(const std::string& gear)
+    {
+        if (gear == "green" || gear == "uncommon") return ITEM_QUALITY_UNCOMMON;
+        if (gear == "blue" || gear == "rare")      return ITEM_QUALITY_RARE;
+        if (gear == "purple" || gear == "epic")    return ITEM_QUALITY_EPIC;
+        throw BridgeCommandError("argument 'gear' must be green, blue or purple");
+    }
+
+    struct Look
+    {
+        uint8 skin = 0, face = 0, hairStyle = 0, hairColor = 0, facialHair = 0;
+    };
+
+    // The same choice the module makes for its random pool, from the client's
+    // own appearance tables, but from a seed: the same seed gives the same
+    // face, so a character that is ever remade looks like itself.
+    Look PickLook(uint8 race, uint8 gender, uint32 seed)
+    {
+        std::vector<uint8> facialHairs;
+        std::vector<std::pair<uint8, uint8>> faces, hairs;   // variation, colour
+        for (CharSectionsMap::const_iterator itr = sCharSectionMap.begin(); itr != sCharSectionMap.end(); ++itr)
+        {
+            CharSectionsEntry const* entry = itr->second;
+            if (entry->Race != race || entry->Gender != gender)
+                continue;
+#ifndef MANGOSBOT_TWO
+            const uint8 colour = uint8(entry->ColorIndex);
+#else
+            const uint8 colour = uint8(entry->Color);
+#endif
+            switch (entry->BaseSection)
+            {
+                case SECTION_TYPE_FACE:        faces.emplace_back(uint8(entry->VariationIndex), colour); break;
+                case SECTION_TYPE_FACIAL_HAIR: facialHairs.push_back(colour); break;
+                case SECTION_TYPE_HAIR:        hairs.emplace_back(uint8(entry->VariationIndex), colour); break;
+                default: break;
+            }
+        }
+        std::mt19937 rng(seed);
+        auto pick = [&rng](size_t count) -> size_t
+        {
+            return count ? std::uniform_int_distribution<size_t>(0, count - 1)(rng) : 0;
+        };
+        Look look;
+        if (!faces.empty())
+        {
+            const auto& face = faces[pick(faces.size())];
+            look.face = face.first;
+            look.skin = face.second;   // a face texture belongs to one skin colour; the module pairs them the same way
+        }
+        if (!hairs.empty())
+        {
+            const auto& hair = hairs[pick(hairs.size())];
+            look.hairStyle = hair.first;
+            look.hairColor = hair.second;
+        }
+        const bool noFacialHair = race == RACE_TAUREN || (gender == GENDER_FEMALE && race != RACE_NIGHTELF && race != RACE_UNDEAD);
+#ifndef MANGOSBOT_TWO
+        if (!noFacialHair && !facialHairs.empty())
+            look.facialHair = facialHairs[pick(facialHairs.size())];
+#endif
+        return look;
+    }
+}
+
+void Bridge::RegisterCastAccount(uint32 accountId)
+{
+    PlayerbotAIConfig& config = sPlayerbotAIConfig;
+    if (!config.IsInCastAccountList(accountId))
+        config.castBotAccounts.push_back(accountId);
+    if (!config.IsInRandomAccountList(accountId))
+        config.randomBotAccounts.push_back(accountId);
+}
+
+void Bridge::LoadCastAccounts()
+{
+    PlayerbotAIConfig& config = sPlayerbotAIConfig;
+    config.castBotAccounts.clear();
+
+    std::string prefix = config.bridgeCastAccountPrefix;
+    std::string randomPrefix = config.randomBotAccountPrefix;
+    AccountMgr::normalizeString(prefix);
+    AccountMgr::normalizeString(randomPrefix);
+    if (prefix.empty() || prefix.rfind(randomPrefix, 0) == 0 || randomPrefix.rfind(prefix, 0) == 0)
+    {
+        sLog.outError("Bridge: AiPlayerbot.Bridge.CastAccountPrefix ('%s') must differ from AiPlayerbot.RandomBotAccountPrefix ('%s'); bot.create is off",
+                      config.bridgeCastAccountPrefix.c_str(), config.randomBotAccountPrefix.c_str());
+        return;
+    }
+
+    std::string pattern = prefix;
+    LoginDatabase.escape_string(pattern);
+    auto rows = LoginDatabase.PQuery("SELECT id, username FROM account WHERE username LIKE '%s%%'", pattern.c_str());
+    if (!rows)
+        return;
+    do
+    {
+        Field* fields = rows->Fetch();
+        const uint32 accountId = fields[0].GetUInt32();
+        std::string username = fields[1].GetCppString();
+        AccountMgr::normalizeString(username);
+        if (username.size() <= prefix.size() || !AllDigits(username.substr(prefix.size())))
+            continue;   // some other account that happens to start the same way
+        RegisterCastAccount(accountId);
+    }
+    while (rows->NextRow());
+    if (!config.castBotAccounts.empty())
+        sLog.outString("Bridge: %zu cast account(s) loaded", config.castBotAccounts.size());
+}
+
+uint32 Bridge::GetOrCreateCastAccount(std::string& error)
+{
+    PlayerbotAIConfig& config = sPlayerbotAIConfig;
+    std::string prefix = config.bridgeCastAccountPrefix;
+    std::string randomPrefix = config.randomBotAccountPrefix;
+    AccountMgr::normalizeString(prefix);
+    AccountMgr::normalizeString(randomPrefix);
+    if (prefix.empty() || prefix.rfind(randomPrefix, 0) == 0 || randomPrefix.rfind(prefix, 0) == 0)
+    {
+        error = "AiPlayerbot.Bridge.CastAccountPrefix must differ from AiPlayerbot.RandomBotAccountPrefix";
+        return 0;
+    }
+
+    for (uint32 number = 0; number < 1000; ++number)
+    {
+        const std::string accountName = prefix + std::to_string(number);
+        uint32 accountId = sAccountMgr.GetId(accountName);
+        if (!accountId)
+        {
+            LoginDatabase.BeginTransaction();
+#ifndef MANGOSBOT_ZERO
+            AccountOpResult result = sAccountMgr.CreateAccount(accountName, RandomPassword(), MAX_EXPANSION);
+#else
+            AccountOpResult result = sAccountMgr.CreateAccount(accountName, RandomPassword());
+#endif
+            LoginDatabase.CommitTransactionDirect();
+            accountId = result == AOR_OK ? sAccountMgr.GetId(accountName) : 0;
+            if (!accountId)
+            {
+                error = "could not create cast account " + accountName;
+                return 0;
+            }
+            sLog.outString("Bridge: created cast account %s", accountName.c_str());
+        }
+        RegisterCastAccount(accountId);
+        if (sAccountMgr.GetCharactersCount(accountId) < MaxCharactersPerAccount())
+            return accountId;
+    }
+    error = "every cast account is full";
+    return 0;
+}
+
+std::optional<Json> Bridge::CmdBotCreate(const BridgeInbound&, const Json& args)
+{
+    // The name, by the core's rules, before anything is touched.
+    std::string name = RequireString(args, "name");
+    if (!normalizePlayerName(name) || ObjectMgr::CheckPlayerName(name, true) != CHAR_NAME_SUCCESS)
+        throw BridgeCommandError("'" + name + "' is not a valid character name (2 to 12 letters, no spaces or digits)");
+    if (sObjectMgr.IsReservedName(name))
+        throw BridgeCommandError("'" + name + "' is a reserved name");
+    if (!sObjectMgr.GetPlayerGuidByName(name).IsEmpty())
+        throw BridgeCommandError("a character named '" + name + "' already exists");
+
+    if (!args.contains("race") || args["race"].is_null() || !args.contains("class") || args["class"].is_null())
+        throw BridgeCommandError("arguments 'race' and 'class' are required");
+    const uint32 race = RaceId(args["race"]);
+    const uint32 cls = ClassId(args["class"]);
+    if (race == 0 || race >= MAX_RACES || !((1 << (race - 1)) & RACEMASK_ALL_PLAYABLE))
+        throw BridgeCommandError("not a playable race");
+    if (cls == 0 || cls >= MAX_CLASSES || !((1 << (cls - 1)) & CLASSMASK_ALL_PLAYABLE))
+        throw BridgeCommandError("not a playable class");
+    ChrRacesEntry const* raceEntry = sChrRacesStore.LookupEntry(race);
+    ChrClassesEntry const* classEntry = sChrClassesStore.LookupEntry(cls);
+    if (!raceEntry || !classEntry || !sObjectMgr.GetPlayerInfo(race, cls))
+        throw BridgeCommandError(std::string("a ") + (raceEntry ? raceEntry->name[0] : "?") + " cannot be a " + (classEntry ? classEntry->name[0] : "?"));
+
+    const std::string genderText = Lower(OptionalString(args, "gender"));
+    uint8 gender;
+    if (genderText == "male") gender = GENDER_MALE;
+    else if (genderText == "female") gender = GENDER_FEMALE;
+    else throw BridgeCommandError("argument 'gender' must be male or female");
+
+    const uint32 maxLevel = sWorld.getConfig(CONFIG_UINT32_MAX_PLAYER_LEVEL);
+    const uint32 level = OptionalUnsigned(args, "level", 1);
+    if (level < 1 || level > maxLevel)
+        throw BridgeCommandError("argument 'level' must be between 1 and " + std::to_string(maxLevel));
+
+    TalentPath* spec = nullptr;
+    const std::string specText = OptionalString(args, "spec");
+    if (!specText.empty())
+    {
+        spec = FindTalentPath(uint8(cls), specText);
+        if (!spec)
+            throw BridgeCommandError("no talent path like '" + specText + "' for " + classEntry->name[0] + " (" + TalentPathNames(uint8(cls)) + ")");
+    }
+    const std::string roleText = OptionalString(args, "role");
+    BotRoles role = BotRoles::BOT_ROLE_NONE;
+    if (!roleText.empty())
+    {
+        role = ChatHelper::parseRole(roleText);
+        if (role == BotRoles::BOT_ROLE_NONE)
+            throw BridgeCommandError("argument 'role' must be tank, healer or dps");
+    }
+    const std::string gear = Lower(OptionalString(args, "gear"));
+    if (!gear.empty())
+        GearQuality(gear);   // validated now, applied on arrival
+
+    uint32 seed = OptionalUnsigned(args, "look", 0);
+    if (seed == 0)
+        seed = urand(1, 0x7fffffff);
+    const Look look = PickLook(uint8(race), gender, seed);
+
+    std::string error;
+    const uint32 accountId = GetOrCreateCastAccount(error);
+    if (!accountId)
+        throw BridgeCommandError(error);
+
+    // From here on, the module's own `.bot create` sequence.
+    WorldSession* session = new WorldSession(accountId, nullptr, SEC_PLAYER,
+#ifdef MANGOSBOT_TWO
+        2, 0, LOCALE_enUS, "", 0, 0, false);
+#endif
+#ifdef MANGOSBOT_ONE
+        2, 0, LOCALE_enUS, "", 0, 0, false);
+#endif
+#ifdef MANGOSBOT_ZERO
+        0, LOCALE_enUS, "", 0);
+#endif
+    session->SetNoAnticheat();
+
+    Player* character = new Player(session);
+    if (!character->Create(sObjectMgr.GeneratePlayerLowGuid(), name, uint8(race), uint8(cls), gender,
+                           look.skin, look.face, look.hairStyle, look.hairColor, look.facialHair, 0))
+    {
+        delete character;
+        delete session;
+        throw BridgeCommandError("the core refused to create '" + name + "'");
+    }
+
+    character->setCinematic(2);
+    character->SetAtLoginFlag(AT_LOGIN_NONE);
+    sObjectAccessor.AddObject(character);
+    const ObjectGuid guid = character->GetObjectGuid();
+    const uint32 counter = character->GetGUIDLow();
+
+    if (spec)
+        sRandomPlayerbotMgr.SetValue(counter, "specNo", uint32(spec->id + 1));
+
+    if (level > 1)
+    {
+        character->SetLevel(level);
+        character->SetUInt32Value(PLAYER_XP, 0);
+        character->InitStatsForLevel(true);
+#ifdef MANGOSBOT_ZERO
+        character->InitTaxiNodes();
+#else
+        character->InitTaxiNodesForLevel();
+#endif
+        character->InitTalentForLevel();
+        character->InitPrimaryProfessions();
+        character->learnDefaultSpells();
+
+        std::ostringstream talentLog;
+        if (spec || role != BotRoles::BOT_ROLE_NONE)
+            ChangeTalentsAction::AutoSelectTalents(character, &talentLog, role);
+
+        sRandomPlayerbotMgr.SetValue(counter, "create levelup", 1);   // spells and gear for this level, on arrival
+    }
+    else
+        character->SetLevel(1);
+    if (!gear.empty())
+        sRandomPlayerbotMgr.SetValue(counter, "create gear", 1, gear);
+
+    character->SaveToDB();
+
+    // The session never took the player, so the logout is bookkeeping and the
+    // object is ours to remove and free.
+    session->LogoutPlayer();
+    sObjectAccessor.RemoveObject(character);
+    delete character;
+    delete session;
+
+    sLog.outString("Bridge: created %s, %s %s %s, level %u, on cast account %u",
+                   name.c_str(), genderText.c_str(), raceEntry->name[0], classEntry->name[0], level, accountId);
+
+    Json result;
+    result["guid"] = GuidString(guid);
+    result["name"] = name;
+    result["race"] = raceEntry->name[0];
+    result["class"] = classEntry->name[0];
+    result["race_id"] = race;
+    result["class_id"] = cls;
+    result["gender"] = genderText;
+    result["level"] = level;
+    result["look"] = seed;
+    result["spec"] = spec ? spec->name : "";
+    result["account"] = accountId;
+    return result;
+}
+
+std::optional<Json> Bridge::CmdBotDelete(const BridgeInbound&, const Json& args)
+{
+    std::string name = RequireString(args, "name");
+    if (!normalizePlayerName(name))
+        throw BridgeCommandError("'" + name + "' is not a valid character name");
+    const ObjectGuid guid = sObjectMgr.GetPlayerGuidByName(name);
+    if (guid.IsEmpty())
+        throw BridgeCommandError("no character named '" + name + "'");
+    const uint32 accountId = sObjectMgr.GetPlayerAccountIdByGUID(guid);
+    if (!sPlayerbotAIConfig.IsInCastAccountList(accountId))
+        throw BridgeCommandError("'" + name + "' is not a cast character (only characters made by bot.create can be deleted here)");
+    if (FindOnlinePlayer(name))
+        throw BridgeCommandError("'" + name + "' is in the world; bot.logout it first");
+
+    Player::DeleteFromDB(guid, accountId, true, true);
+    CharacterDatabase.PExecute("DELETE FROM ai_playerbot_random_bots WHERE bot = '%u'", guid.GetCounter());
+    sLog.outString("Bridge: deleted cast character %s", name.c_str());
+
+    Json result;
+    result["guid"] = GuidString(guid);
+    result["name"] = name;
+    result["deleted"] = true;
+    return result;
+}
+
+bool Bridge::NeedsOutfit(Player* bot)
+{
+    if (!bot || !sPlayerbotAIConfig.IsCastBot(bot->GetGUIDLow()))
+        return false;
+    const uint32 counter = bot->GetGUIDLow();
+    return sRandomPlayerbotMgr.GetValue(counter, "create levelup") || sRandomPlayerbotMgr.GetValue(counter, "create gear");
+}
+
+void Bridge::OutfitOnArrival(Player* bot)
+{
+    const uint32 counter = bot->GetGUIDLow();
+    if (sRandomPlayerbotMgr.GetValue(counter, "create levelup"))
+    {
+        // The module's incremental pass: keeps the level and the talents it
+        // was made with, learns the spells a character of that level knows,
+        // and equips it accordingly.
+        PlayerbotFactory factory(bot, bot->GetLevel());
+        factory.Randomize(true, false);
+        sRandomPlayerbotMgr.SetValue(counter, "create levelup", 0);
+    }
+    if (sRandomPlayerbotMgr.GetValue(counter, "create gear"))
+    {
+        const std::string gear = sRandomPlayerbotMgr.GetData(counter, "create gear");
+        try
+        {
+            PlayerbotFactory factory(bot, bot->GetLevel(), GearQuality(gear));
+            factory.EquipGear();
+        }
+        catch (const BridgeCommandError&)
+        {
+            // an unknown word could only have got there by hand; nothing to do
+        }
+        sRandomPlayerbotMgr.SetValue(counter, "create gear", 0);
+    }
+    sLog.outString("Bridge: %s outfitted for level %u", bot->GetName(), bot->GetLevel());
+}
+
+void Bridge::FlushPendingOutfits()
+{
+    for (auto it = pendingOutfits_.begin(); it != pendingOutfits_.end();)
+    {
+        Player* bot = sObjectMgr.GetPlayer(*it);
+        if (!bot)
+        {
+            it = pendingOutfits_.erase(it);
+            continue;
+        }
+        if (!bot->IsInWorld() || bot->IsBeingTeleported() || !bot->GetPlayerbotAI())
+        {
+            ++it;
+            continue;
+        }
+        OutfitOnArrival(bot);
+        it = pendingOutfits_.erase(it);
+    }
 }
