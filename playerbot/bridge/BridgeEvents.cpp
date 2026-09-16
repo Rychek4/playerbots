@@ -395,6 +395,43 @@ void Bridge::WatchMember(Player* player)
         Emit(inCombat ? EV_COMBAT_STARTED : EV_COMBAT_ENDED, data);
         prev.inCombat = inCombat;
     }
+
+    // Moving or standing, for the real players only. A stranger placed in
+    // front of someone running between zones is never seen; the control
+    // center stages scenes for a player who has stopped. Starting to move is
+    // reported at once; coming to rest is reported after two seconds of it,
+    // so a pause at a signpost is not a stop.
+    PlayerbotAI* ai = player->GetPlayerbotAI();
+    if (!ai || ai->IsRealPlayer())
+    {
+        const uint32 now = WorldTimer::getMSTime();
+        const bool movingNow = player->IsMoving() || player->IsTaxiFlying();
+        if (movingNow)
+        {
+            prev.stillSince = 0;
+            if (!prev.moving)
+            {
+                prev.moving = true;
+                Json data;
+                data["unit"] = PlayerRef(player);
+                data["moving"] = true;
+                Emit(EV_MOVEMENT, data);
+            }
+        }
+        else if (prev.moving)
+        {
+            if (prev.stillSince == 0)
+                prev.stillSince = now;
+            else if (WorldTimer::getMSTimeDiff(prev.stillSince, now) >= 2000)
+            {
+                prev.moving = false;
+                Json data;
+                data["unit"] = PlayerRef(player);
+                data["moving"] = false;
+                Emit(EV_MOVEMENT, data);
+            }
+        }
+    }
 }
 
 // At the bubble interval: zone and area need a terrain lookup, so they are not read every tick.

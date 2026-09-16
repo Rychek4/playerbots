@@ -64,6 +64,7 @@ namespace BridgeProtocol
     constexpr char EV_SCENE[] = "scene";
     constexpr char EV_UNIT_ENTERED[] = "unit.entered";
     constexpr char EV_UNIT_LEFT[] = "unit.left";
+    constexpr char EV_MOVEMENT[] = "movement";
 
     constexpr uint32 DUPLICATE_WINDOW_MS = 2000;
 }
@@ -136,6 +137,8 @@ private:
         uint32 level = 0;
         bool alive = true;
         bool inCombat = false;
+        bool moving = false;       // real players only: the last movement state announced
+        uint32 stillSince = 0;     // ms clock when the player last came to rest, 0 while moving
     };
 
     // Dispatch and replies
