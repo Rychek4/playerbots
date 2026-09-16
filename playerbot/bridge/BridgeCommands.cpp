@@ -1233,6 +1233,67 @@ std::optional<Json> Bridge::CmdBotLevel(const BridgeInbound&, const Json& args)
     return result;
 }
 
+// Scene pieces ---------------------------------------------------------------------
+//
+// A stranger who teleports in, speaks, and teleports out is a proof of
+// concept. These let the control center have one walk up, gesture, sit,
+// and walk off, using the module's own movement rather than the map's.
+
+std::optional<Json> Bridge::CmdBotMaster(const BridgeInbound&, const Json& args)
+{
+    // Give a bot a master for a while (a cast stranger follows the player it
+    // is approaching), or take it away. No group is joined, so the party and
+    // the companions' minds never see it; only the module's follow does.
+    Player* bot = RequireBot(RequireString(args, "bot"));
+    PlayerbotAI* ai = bot->GetPlayerbotAI();
+    Player* master = nullptr;
+    if (args.contains("master") && !args["master"].is_null())
+    {
+        master = RequireOnlinePlayer(RequireString(args, "master"), "master");
+        PlayerbotAI* masterAi = master->GetPlayerbotAI();
+        if (masterAi && !masterAi->IsRealPlayer())
+            throw BridgeCommandError("'" + std::string(master->GetName()) + "' is a bot; a master must be a real player");
+    }
+    ai->SetMaster(master);
+    ai->ResetStrategies();
+    Json result;
+    result["unit"] = PlayerRef(bot);
+    result["master"] = master ? PlayerRef(master) : Json(nullptr);
+    return result;
+}
+
+std::optional<Json> Bridge::CmdBotEmote(const BridgeInbound&, const Json& args)
+{
+    // An animation emote (wave, bow, point...) by the client's id. The text
+    // emote that prints a line is bot.say on the emote channel; this is the
+    // body moving.
+    Player* bot = RequireBot(RequireString(args, "bot"));
+    const uint32 emote = OptionalUnsigned(args, "emote", 0);
+    if (emote == 0)
+        throw BridgeCommandError("argument 'emote' must be an emote id");
+    bot->HandleEmoteCommand(emote);
+    Json result;
+    result["unit"] = PlayerRef(bot);
+    result["emote"] = emote;
+    return result;
+}
+
+std::optional<Json> Bridge::CmdBotStance(const BridgeInbound&, const Json& args)
+{
+    Player* bot = RequireBot(RequireString(args, "bot"));
+    const std::string state = OptionalString(args, "state", "stand");
+    uint8 stand;
+    if (state == "sit")        stand = UNIT_STAND_STATE_SIT;
+    else if (state == "kneel") stand = UNIT_STAND_STATE_KNEEL;
+    else if (state == "stand") stand = UNIT_STAND_STATE_STAND;
+    else throw BridgeCommandError("argument 'state' must be sit, kneel or stand");
+    bot->SetStandState(stand);
+    Json result;
+    result["unit"] = PlayerRef(bot);
+    result["state"] = state;
+    return result;
+}
+
 bool Bridge::NeedsOutfit(Player* bot)
 {
     if (!bot || !sPlayerbotAIConfig.IsCastBot(bot->GetGUIDLow()))

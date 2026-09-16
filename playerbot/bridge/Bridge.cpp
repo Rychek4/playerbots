@@ -38,6 +38,9 @@ Bridge::Bridge()
     handlers_["bot.create"] = &Bridge::CmdBotCreate;
     handlers_["bot.delete"] = &Bridge::CmdBotDelete;
     handlers_["bot.level"] = &Bridge::CmdBotLevel;
+    handlers_["bot.master"] = &Bridge::CmdBotMaster;
+    handlers_["bot.emote"] = &Bridge::CmdBotEmote;
+    handlers_["bot.stance"] = &Bridge::CmdBotStance;
 }
 
 Bridge::~Bridge()
