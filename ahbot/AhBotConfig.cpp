@@ -5,7 +5,12 @@ std::vector<std::string> split(const std::string &s, char delim);
 
 INSTANTIATE_SINGLETON_1(AhBotConfig);
 
-AhBotConfig::AhBotConfig()
+// Every field has a value before ahbot.conf is read, so a missing file means
+// an auction bot that is off, not one running on whatever the heap held.
+AhBotConfig::AhBotConfig() : enabled(false), guid(0), updateInterval(900), historyDays(30), maxSellInterval(3600 * 8),
+    itemBuyMinInterval(600), itemBuyMaxInterval(7200), itemSellMinInterval(600), itemSellMaxInterval(7200),
+    alwaysAvailableMoney(200000), priceMultiplier(1.0f), priceQualityMultiplier(1.0f), defaultMinPrice(20),
+    stackReducePrice(1000000), maxItemLevel(199), maxRequiredLevel(80), underPriceProbability(0.05f), sendmail(true)
 {
 }
 
@@ -56,6 +61,15 @@ bool AhBotConfig::Initialize()
     LoadSet<std::set<uint32> >(config.GetStringDefault("AhBot.IgnoreVendorItemIds", "755,858,4592,4593,1710,3827,2455,3385"), ignoreVendorItemIds);
     sendmail = config.GetBoolDefault("AhBot.SendMail", true);
 
+    // A zero interval would run the check on every world tick and flood the
+    // console; nobody means that. Say what was read, and what will be used.
+    if (enabled && updateInterval < 60)
+    {
+        sLog.outError("AhBot.UpdateIntervalInSeconds = %u in ahbot.conf is too small; using 900", updateInterval);
+        updateInterval = 900;
+    }
+    if (enabled)
+        sLog.outString("AhBot enabled (ahbot.conf); checking auctions every %u seconds", updateInterval);
 
     return enabled;
 }
