@@ -4,6 +4,10 @@
 #include "playerbot/bridge/Bridge.h"
 
 #include "playerbot/PlayerbotAI.h"
+#include "playerbot/GuidPosition.h"
+#include "playerbot/TravelMgr.h"
+#include "playerbot/strategy/Action.h"
+#include "playerbot/strategy/Engine.h"
 #include "playerbot/PlayerbotAIConfig.h"
 #include "playerbot/playerbot.h"
 
@@ -430,6 +434,49 @@ void Bridge::WatchMember(Player* player)
                 data["moving"] = false;
                 Emit(EV_MOVEMENT, data);
             }
+        }
+    }
+    // What a companion is doing, for the control center to put in words: the
+    // module's own last executed action, the NPC it is heading for, and where
+    // it is travelling. Reported when any of it changes, at most every two
+    // seconds; a change inside the throttle is reported when the window ends.
+    else if (ai->HasRealPlayerMaster())
+    {
+        const uint32 now = WorldTimer::getMSTime();
+        std::string action;
+        if (Engine* engine = ai->GetCurrentEngine())
+            if (const Action* last = engine->GetLastExecutedAction())
+                action = const_cast<Action*>(last)->getName();   // getName is not const in the module
+        ObjectGuid rpgTarget;
+        std::string travel;
+        if (AiObjectContext* context = ai->GetAiObjectContext())
+        {
+            rpgTarget = context->GetValue<GuidPosition>("rpg target")->Get();
+            if (TravelTarget* target = context->GetValue<TravelTarget*>("travel target")->Get())
+                if (target->GetStatus() == TravelStatus::TRAVEL_STATUS_TRAVEL || target->GetStatus() == TravelStatus::TRAVEL_STATUS_WORK)
+                    if (TravelDestination* destination = target->GetDestination())
+                        travel = destination->GetTitle();
+        }
+        const bool changed = action != prev.activity || rpgTarget != prev.rpgTarget || travel != prev.travel;
+        if (changed && (prev.activityAt == 0 || WorldTimer::getMSTimeDiff(prev.activityAt, now) >= 2000))
+        {
+            prev.activity = action;
+            prev.rpgTarget = rpgTarget;
+            prev.travel = travel;
+            prev.activityAt = now;
+            Json data;
+            data["unit"] = PlayerRef(player);
+            data["action"] = action;
+            Unit* target = rpgTarget ? player->GetMap()->GetUnit(rpgTarget) : nullptr;
+            data["target"] = target ? UnitRef(target) : Json(nullptr);
+            data["destination"] = travel;
+            Player* master = ai->GetMaster();
+            if (master && master->GetMapId() == player->GetMapId())
+                data["dist"] = player->GetDistance(master);
+            else
+                data["dist"] = nullptr;
+            data["moving"] = player->IsMoving();
+            Emit(EV_BOT_ACTIVITY, data);
         }
     }
 }

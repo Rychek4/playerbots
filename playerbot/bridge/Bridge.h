@@ -65,6 +65,7 @@ namespace BridgeProtocol
     constexpr char EV_UNIT_ENTERED[] = "unit.entered";
     constexpr char EV_UNIT_LEFT[] = "unit.left";
     constexpr char EV_MOVEMENT[] = "movement";
+    constexpr char EV_BOT_ACTIVITY[] = "bot.activity";
 
     constexpr uint32 DUPLICATE_WINDOW_MS = 2000;
 }
@@ -139,6 +140,10 @@ private:
         bool inCombat = false;
         bool moving = false;       // real players only: the last movement state announced
         uint32 stillSince = 0;     // ms clock when the player last came to rest, 0 while moving
+        std::string activity;      // companions only: the module's last executed action, as announced
+        ObjectGuid rpgTarget;      // the NPC the companion was heading for, as announced
+        std::string travel;        // where the companion was travelling, as announced
+        uint32 activityAt = 0;     // ms clock of the last bot.activity, for the throttle
     };
 
     // Dispatch and replies
