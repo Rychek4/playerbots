@@ -1152,7 +1152,10 @@ void PlayerbotAI::UpdateAIInternal(uint32 elapsed, bool minimal)
                 chatReplies.pop();
                 continue;
             }
-            ChatReplyAction::ChatReplyDo(bot, holder.m_type, holder.m_guid1, holder.m_guid2, holder.m_msg, holder.m_chanName, holder.m_name);
+            // A bot on the silent strategy (the narrator's companions) keeps its canned replies to itself;
+            // the engine checks this on the action, this queue runs outside the engine.
+            if (!HasStrategy("silent", BotState::BOT_STATE_NON_COMBAT))
+                ChatReplyAction::ChatReplyDo(bot, holder.m_type, holder.m_guid1, holder.m_guid2, holder.m_msg, holder.m_chanName, holder.m_name);
             chatReplies.pop();
         }
 
