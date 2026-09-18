@@ -17,6 +17,7 @@
 #include "playerbot/strategy/Event.h"
 
 #include "Entities/Creature.h"
+#include "Entities/NPCHandler.h"
 #include "Entities/Player.h"
 #include "Globals/ObjectAccessor.h"
 #include "Globals/ObjectMgr.h"
@@ -393,49 +394,178 @@ std::optional<Json> Bridge::CmdQuestNearby(const BridgeInbound&, const Json& arg
             continue;
         if (!(unit->GetUInt32Value(UNIT_NPC_FLAGS) & UNIT_NPC_FLAG_QUESTGIVER))
             continue;
-        Creature* giver = static_cast<Creature*>(unit);
-        const float dist = player->GetDistance(giver);
-
-        QuestRelationsMapBounds offers = sObjectMgr.GetCreatureQuestRelationsMapBounds(giver->GetEntry());
-        for (auto it = offers.first; it != offers.second && offered.size() < most; ++it)
-        {
-            Quest const* quest = sObjectMgr.GetQuestTemplate(it->second);
-            if (!quest)
-                continue;
-            if (player->GetQuestStatus(quest->GetQuestId()) != QUEST_STATUS_NONE || player->GetQuestRewardStatus(quest->GetQuestId()))
-                continue;
-            if (!player->CanTakeQuest(quest, false) || !player->CanAddQuest(quest, false))
-                continue;
-            Json lead;
-            lead["quest_id"] = quest->GetQuestId();
-            lead["title"] = quest->GetTitle();
-            lead["level"] = quest->GetQuestLevel();
-            lead["giver"] = UnitRef(giver);
-            lead["dist"] = dist;
-            offered.push_back(lead);
-        }
-
-        QuestRelationsMapBounds takes = sObjectMgr.GetCreatureQuestInvolvedRelationsMapBounds(giver->GetEntry());
-        for (auto it = takes.first; it != takes.second && turnIn.size() < most; ++it)
-        {
-            Quest const* quest = sObjectMgr.GetQuestTemplate(it->second);
-            if (!quest || player->GetQuestStatus(quest->GetQuestId()) != QUEST_STATUS_COMPLETE)
-                continue;
-            if (!player->CanRewardQuest(quest, false))
-                continue;
-            Json lead;
-            lead["quest_id"] = quest->GetQuestId();
-            lead["title"] = quest->GetTitle();
-            lead["level"] = quest->GetQuestLevel();
-            lead["taker"] = UnitRef(giver);
-            lead["dist"] = dist;
-            turnIn.push_back(lead);
-        }
+        QuestsAt(player, static_cast<Creature*>(unit), offered, turnIn, most);
     }
     Json result;
     result["player"] = PlayerRef(player);
     result["offered"] = offered;
     result["turn_in"] = turnIn;
+    return result;
+}
+
+// The quests one creature offers the player and would take from them, with
+// the player's standing on each: only what can be taken now, only what can be
+// turned in now. Appended to the two lists up to `most` each.
+void Bridge::QuestsAt(Player* player, Creature* giver, Json& offered, Json& turnIn, size_t most)
+{
+    const float dist = player->GetDistance(giver);
+
+    QuestRelationsMapBounds offers = sObjectMgr.GetCreatureQuestRelationsMapBounds(giver->GetEntry());
+    for (auto it = offers.first; it != offers.second && offered.size() < most; ++it)
+    {
+        Quest const* quest = sObjectMgr.GetQuestTemplate(it->second);
+        if (!quest)
+            continue;
+        if (player->GetQuestStatus(quest->GetQuestId()) != QUEST_STATUS_NONE || player->GetQuestRewardStatus(quest->GetQuestId()))
+            continue;
+        if (!player->CanTakeQuest(quest, false) || !player->CanAddQuest(quest, false))
+            continue;
+        Json lead;
+        lead["quest_id"] = quest->GetQuestId();
+        lead["title"] = quest->GetTitle();
+        lead["level"] = quest->GetQuestLevel();
+        lead["giver"] = UnitRef(giver);
+        lead["dist"] = dist;
+        offered.push_back(lead);
+    }
+
+    QuestRelationsMapBounds takes = sObjectMgr.GetCreatureQuestInvolvedRelationsMapBounds(giver->GetEntry());
+    for (auto it = takes.first; it != takes.second && turnIn.size() < most; ++it)
+    {
+        Quest const* quest = sObjectMgr.GetQuestTemplate(it->second);
+        if (!quest || player->GetQuestStatus(quest->GetQuestId()) != QUEST_STATUS_COMPLETE)
+            continue;
+        if (!player->CanRewardQuest(quest, false))
+            continue;
+        Json lead;
+        lead["quest_id"] = quest->GetQuestId();
+        lead["title"] = quest->GetTitle();
+        lead["level"] = quest->GetQuestLevel();
+        lead["taker"] = UnitRef(giver);
+        lead["dist"] = dist;
+        turnIn.push_back(lead);
+    }
+}
+
+// NPCs as characters ------------------------------------------------------------
+//
+// The control center speaks for the NPCs the party comes up to. Everything it
+// needs to write a line that belongs to this one is already in the world
+// database: the title under the name, the faction, whether it is a guard or a
+// civilian, whether it patrols, the gossip it shows when clicked, and the
+// quests it has for this player. One read, no model.
+
+std::optional<Json> Bridge::CmdNpcAbout(const BridgeInbound&, const Json& args)
+{
+    Creature* creature = FindCreature(args);
+    const std::string name = OptionalString(args, "player");
+    Player* player = nullptr;
+    if (!name.empty())
+        player = RequireOnlinePlayer(name, "player");
+    else
+    {
+        std::vector<Player*> reals = RealPlayersOnline();
+        if (!reals.empty())
+            player = reals.front();
+    }
+    CreatureInfo const* info = creature->GetCreatureInfo();
+
+    Json result;
+    result["unit"] = UnitRef(creature);
+    result["sub_name"] = info && info->SubName ? std::string(info->SubName) : std::string();
+    result["guard"] = creature->IsGuard();
+    result["civilian"] = info ? (info->ExtraFlags & CREATURE_EXTRA_FLAG_CIVILIAN) != 0 : false;
+    result["rank"] = info ? info->Rank : 0u;
+    static const char* kTypes[] = {"", "beast", "dragonkin", "demon", "elemental", "giant", "undead", "humanoid",
+                                   "critter", "mechanical", "not specified", "totem"};
+    const uint32 type = info ? info->CreatureType : 0u;
+    result["creature_type"] = type < sizeof(kTypes) / sizeof(kTypes[0]) ? kTypes[type] : "";
+
+    std::string factionName;
+    if (FactionTemplateEntry const* ft = sFactionTemplateStore.LookupEntry(creature->GetFaction()))
+        if (FactionEntry const* f = sFactionStore.LookupEntry(ft->faction))
+            if (f->name[0])
+                factionName = f->name[0];
+    result["faction"] = factionName;
+
+    switch (creature->GetDefaultMovementType())
+    {
+        case WAYPOINT_MOTION_TYPE: result["movement"] = "patrols"; break;
+        case RANDOM_MOTION_TYPE:
+        case TIMED_RANDOM_MOTION_TYPE: result["movement"] = "wanders"; break;
+        default: result["movement"] = "stands"; break;
+    }
+    result["moving"] = creature->IsMoving();
+
+    float hx = 0.0f, hy = 0.0f, hz = 0.0f, ho = 0.0f;
+    creature->GetRespawnCoord(hx, hy, hz, &ho);
+    Json home;
+    home["x"] = hx;
+    home["y"] = hy;
+    home["z"] = hz;
+    home["o"] = ho;
+    result["home"] = home;
+    result["pos"] = Position(creature);
+    if (player)
+        result["dist"] = player->GetDistance(creature);
+    else
+        result["dist"] = nullptr;
+
+    // Its own words: the texts behind its gossip menu, first option of each,
+    // up to three. They carry the client's placeholders ($N, $C, $B...), which
+    // the reader replaces.
+    Json gossip = Json::array();
+    if (const uint32 menuId = creature->GetDefaultGossipMenuId())
+    {
+        GossipMenusMapBounds bounds = sObjectMgr.GetGossipMenusMapBounds(menuId);
+        for (auto it = bounds.first; it != bounds.second && gossip.size() < 3; ++it)
+        {
+            GossipText const* text = sObjectMgr.GetGossipText(it->second.text_id);
+            if (!text)
+                continue;
+            for (int i = 0; i < MAX_GOSSIP_TEXT_OPTIONS && gossip.size() < 3; ++i)
+            {
+                const std::string& line = text->Options[i].Text_0.empty() ? text->Options[i].Text_1 : text->Options[i].Text_0;
+                if (!line.empty())
+                    gossip.push_back(line);
+            }
+        }
+    }
+    result["gossip"] = gossip;
+
+    Json offered = Json::array();
+    Json turnIn = Json::array();
+    if (player && (creature->GetUInt32Value(UNIT_NPC_FLAGS) & UNIT_NPC_FLAG_QUESTGIVER))
+        QuestsAt(player, creature, offered, turnIn, 6);
+    Json quests;
+    quests["offered"] = offered;
+    quests["turn_in"] = turnIn;
+    result["quests"] = quests;
+    return result;
+}
+
+std::optional<Json> Bridge::CmdNpcFace(const BridgeInbound&, const Json& args)
+{
+    // Turn to face a player, so the one who speaks is seen to; or, with no
+    // target, back to the way it stood when it spawned.
+    Creature* creature = FindCreature(args);
+    const std::string targetName = OptionalString(args, "target");
+    Json result;
+    result["unit"] = UnitRef(creature);
+    if (targetName.empty())
+    {
+        float x = 0.0f, y = 0.0f, z = 0.0f, o = 0.0f;
+        creature->GetRespawnCoord(x, y, z, &o);
+        creature->SetFacingTo(o);
+        result["facing"] = "home";
+        return result;
+    }
+    Player* target = RequireOnlinePlayer(targetName, "target");
+    if (target->GetMapId() != creature->GetMapId())
+        throw BridgeCommandError("'" + std::string(target->GetName()) + "' is on another map");
+    creature->SetFacingToObject(target);
+    result["facing"] = "target";
+    result["target"] = PlayerRef(target);
     return result;
 }
 

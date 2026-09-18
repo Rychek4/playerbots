@@ -220,6 +220,7 @@ Json Bridge::NearbyUnit(Player* center, Unit* unit)
     entry["hostile"] = center->IsEnemy(unit);
     entry["alive"] = unit->IsAlive();
     entry["in_combat"] = unit->IsInCombat();
+    entry["moving"] = unit->IsMoving();
     if (unit->GetTypeId() == TYPEID_UNIT)
     {
         const uint32 flags = unit->GetUInt32Value(UNIT_NPC_FLAGS);

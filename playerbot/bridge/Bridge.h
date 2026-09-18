@@ -197,6 +197,9 @@ private:
     std::optional<Json> CmdBotStance(const BridgeInbound& in, const Json& args);
     std::optional<Json> CmdBotFace(const BridgeInbound& in, const Json& args);
     std::optional<Json> CmdQuestNearby(const BridgeInbound& in, const Json& args);
+    std::optional<Json> CmdNpcAbout(const BridgeInbound& in, const Json& args);
+    std::optional<Json> CmdNpcFace(const BridgeInbound& in, const Json& args);
+    static void QuestsAt(Player* player, Creature* giver, Json& offered, Json& turnIn, size_t most);
     static uint32 GetOrCreateCastAccount(std::string& error);
     static void RegisterCastAccount(uint32 accountId);
     static bool NeedsOutfit(Player* bot);
