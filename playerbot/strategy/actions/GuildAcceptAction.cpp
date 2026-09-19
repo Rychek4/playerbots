@@ -44,6 +44,20 @@ bool GuildAcceptAction::Execute(Event& event)
 
         accept = false;
     }
+    else if (ai->HasActivePlayerMaster() && inviter->GetPlayerbotAI() && !inviter->GetPlayerbotAI()->IsRealPlayer())
+    {
+        // A companion belongs to whoever is playing with it, and its guild is
+        // that person's business rather than a passing recruiter's. The invite
+        // side already tries to leave someone's alt alone, but that check
+        // exempts random bots (GuildManagementActions.cpp: HasActivePlayerMaster
+        // && !IsRandomBot), and a companion here is a random bot with a master
+        // put on it, so the invite arrives anyway. It is refused on this side
+        // instead, and silently: nothing is said, because the character's
+        // speech is not the module's to spend.
+        // An invite from a human still goes through. It is only another bot's
+        // recruiting that is turned away.
+        accept = false;
+    }
     else if (!ai->GetSecurity()->CheckLevelFor(PlayerbotSecurityLevel::PLAYERBOT_SECURITY_GUILD, false, inviter, true))
     {
         ai->TellError(requester, "Sorry, I don't want to join your guild :(");
