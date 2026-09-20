@@ -106,6 +106,12 @@ public:
 public:
     bool Initialize();
     bool IsInRandomAccountList(uint32 id);
+    // Cast accounts: characters the narrator bridge made to order (bot.create).
+    // They sit in randomBotAccounts too, so ownership rules treat them like
+    // pool bots (a real player may add them), but the random manager never
+    // re-rolls, teleports or times them out, and never logs them in on its own.
+    bool IsInCastAccountList(uint32 id);
+    bool IsCastBot(uint32 guid);
     bool IsFreeAltBot(uint32 guid);
     bool IsFreeAltBot(Player* player) {return IsFreeAltBot(player->GetGUIDLow());}
     bool IsInRandomQuestItemList(uint32 id);
@@ -130,6 +136,7 @@ public:
     std::vector<uint32> randomBotMaps;
     std::list<uint32> randomBotQuestItems;
     std::list<uint32> randomBotAccounts;
+    std::list<uint32> castBotAccounts;
     std::list<uint32> randomBotSpellIds;
     std::list<uint32> randomBotQuestIds;
     std::list<uint32> immuneSpellIds;
@@ -401,6 +408,7 @@ public:
     int bridgeBubbleInterval;
     float bridgeSceneRadius;
     int bridgeMaxClients;
+    std::string bridgeCastAccountPrefix;
 
     bool perfMonEnabled;
     bool bExplicitDbStoreSave = false;

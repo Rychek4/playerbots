@@ -987,6 +987,11 @@ AiPlayerbot.UseKnockback = 1
 #AiPlayerbot.Bridge.SceneRadius = 40
 # Maximum simultaneous bridge clients
 #AiPlayerbot.Bridge.MaxClients = 4
+# Accounts for characters the control center makes to order (bot.create): named like the
+# random-bot accounts, numbered from 0, nine characters each, created as needed. Characters
+# on them are never re-rolled, teleported or timed out by the random-bot manager, and it never
+# logs them in by itself. Must differ from AiPlayerbot.RandomBotAccountPrefix.
+#AiPlayerbot.Bridge.CastAccountPrefix = castbot
 
 AiPlayerbot.PerfMonEnabled = 0
 

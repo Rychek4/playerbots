@@ -82,6 +82,12 @@ bool PetitionSignAction::Execute(Event& event)
     if (_inviter == bot)
         return false;
 
+    // The same for a guild charter as for a guild invite: a companion does not
+    // sign a passing bot's petition. A human asking still gets a signature.
+    const bool botRecruiter = _inviter->GetPlayerbotAI() && !_inviter->GetPlayerbotAI()->IsRealPlayer();
+    if (ai->HasActivePlayerMaster() && botRecruiter)
+        accept = false;
+
     if (!accept || !ai->GetSecurity()->CheckLevelFor(PlayerbotSecurityLevel::PLAYERBOT_SECURITY_GUILD, false, _inviter, true))
     {
         WorldPacket data(MSG_PETITION_DECLINE);

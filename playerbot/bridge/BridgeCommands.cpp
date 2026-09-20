@@ -14,11 +14,16 @@
 #include "playerbot/PlayerbotMgr.h"
 #include "playerbot/RandomPlayerbotMgr.h"
 #include "playerbot/playerbot.h"
+#include "playerbot/strategy/Event.h"
 
 #include "Entities/Creature.h"
+#include "Entities/NPCHandler.h"
 #include "Entities/Player.h"
 #include "Globals/ObjectAccessor.h"
 #include "Globals/ObjectMgr.h"
+#include "Grids/CellImpl.h"
+#include "Grids/GridNotifiers.h"
+#include "Grids/GridNotifiersImpl.h"
 #include "Maps/Map.h"
 #include "Maps/MapManager.h"
 #include "Database/DatabaseEnv.h"
@@ -183,10 +188,64 @@ std::optional<Json> Bridge::CmdBotAdd(const BridgeInbound&, const Json& args)
     if (!mgr)
         throw BridgeCommandError("master cannot control bots (no bot manager on that player)");
     // Same path as the in-game ".bot add" command, ownership rules included.
-    std::list<std::string> messages = mgr->HandlePlayerbotCommand("add " + RequireString(args, "bot"), master);
+    std::string name = RequireString(args, "bot");
+    std::list<std::string> messages = mgr->HandlePlayerbotCommand("add " + name, master);
+    // For a character on a random-bot or cast account the module's add only
+    // logs it in; it stands in the world with no master until something puts
+    // it in the player's group. The first live session found Ansel like that.
+    // The bridge finishes the job on the world tick, once the character is
+    // in the world with its AI: master set, group joined, bot.login announced.
+    if (normalizePlayerName(name))
+    {
+        const ObjectGuid guid = sObjectMgr.GetPlayerGuidByName(name);
+        if (!guid.IsEmpty() && sPlayerbotAIConfig.IsInRandomAccountList(sObjectMgr.GetPlayerAccountIdByGUID(guid)))
+            pendingAttach_[guid] = std::make_pair(master->GetObjectGuid(), WorldTimer::getMSTime() + 30000);
+    }
     Json result;
     result["messages"] = messages;
     return result;
+}
+
+void Bridge::FlushPendingAttach()
+{
+    if (pendingAttach_.empty())
+        return;
+    const uint32 now = WorldTimer::getMSTime();
+    for (auto it = pendingAttach_.begin(); it != pendingAttach_.end();)
+    {
+        const ObjectGuid guid = it->first;
+        Player* master = sObjectMgr.GetPlayer(it->second.first);
+        Player* bot = sObjectMgr.GetPlayer(guid);
+        PlayerbotAI* ai = bot ? bot->GetPlayerbotAI() : nullptr;
+        if (!master || !master->IsInWorld())
+        {
+            it = pendingAttach_.erase(it);
+            continue;
+        }
+        if (!bot || !bot->IsInWorld() || !ai)
+        {
+            if (int32(it->second.second - now) < 0)
+            {
+                sLog.outString("Bridge: gave up waiting for %s to log in for %s", GuidString(guid).c_str(), master->GetName());
+                it = pendingAttach_.erase(it);
+            }
+            else
+                ++it;
+            continue;
+        }
+        // The same three steps a pool bot goes through when it accepts a
+        // real player's group invitation.
+        if (ai->GetMaster() != master)
+        {
+            ai->SetMaster(master);
+            ai->ResetStrategies();
+        }
+        if (!bot->GetGroup() || bot->GetGroup() != master->GetGroup())
+            ai->DoSpecificAction("join", Event("bridge", "", master));
+        sLog.outString("Bridge: %s is now %s's companion", bot->GetName(), master->GetName());
+        EmitBotLogin(bot);   // it has a master now, so this is a client's business
+        it = pendingAttach_.erase(it);
+    }
 }
 
 std::optional<Json> Bridge::CmdBotRemove(const BridgeInbound&, const Json& args)
@@ -301,6 +360,215 @@ std::optional<Json> Bridge::CmdSceneGet(const BridgeInbound&, const Json& args)
     return BuildScene(center);
 }
 
+// Quests ------------------------------------------------------------------------
+//
+// What the game knows about work close by, for a scene to point at: quests
+// the player could take from givers in view, and complete ones a giver in
+// view would take. Facts only; nothing is accepted or handed out here.
+
+std::optional<Json> Bridge::CmdQuestNearby(const BridgeInbound&, const Json& args)
+{
+    const std::string name = OptionalString(args, "player");
+    Player* player = nullptr;
+    if (!name.empty())
+        player = RequireOnlinePlayer(name, "player");
+    else
+    {
+        std::vector<Player*> reals = RealPlayersOnline();
+        if (reals.empty())
+            throw BridgeCommandError("no real player is online; pass 'player'");
+        player = reals.front();
+    }
+    const float radius = sPlayerbotAIConfig.bridgeSceneRadius > 0.0f ? sPlayerbotAIConfig.bridgeSceneRadius : 40.0f;
+    std::list<Unit*> units;
+    MaNGOS::AnyUnitInObjectRangeCheck check(player, radius);
+    MaNGOS::UnitListSearcher<MaNGOS::AnyUnitInObjectRangeCheck> searcher(units, check);
+    Cell::VisitAllObjects(player, searcher, radius);
+
+    Json offered = Json::array();
+    Json turnIn = Json::array();
+    const size_t most = 8;
+    for (Unit* unit : units)
+    {
+        if (unit->GetTypeId() != TYPEID_UNIT || !unit->IsAlive())
+            continue;
+        if (!(unit->GetUInt32Value(UNIT_NPC_FLAGS) & UNIT_NPC_FLAG_QUESTGIVER))
+            continue;
+        QuestsAt(player, static_cast<Creature*>(unit), offered, turnIn, most);
+    }
+    Json result;
+    result["player"] = PlayerRef(player);
+    result["offered"] = offered;
+    result["turn_in"] = turnIn;
+    return result;
+}
+
+// The quests one creature offers the player and would take from them, with
+// the player's standing on each: only what can be taken now, only what can be
+// turned in now. Appended to the two lists up to `most` each.
+void Bridge::QuestsAt(Player* player, Creature* giver, Json& offered, Json& turnIn, size_t most)
+{
+    const float dist = player->GetDistance(giver);
+
+    QuestRelationsMapBounds offers = sObjectMgr.GetCreatureQuestRelationsMapBounds(giver->GetEntry());
+    for (auto it = offers.first; it != offers.second && offered.size() < most; ++it)
+    {
+        Quest const* quest = sObjectMgr.GetQuestTemplate(it->second);
+        if (!quest)
+            continue;
+        if (player->GetQuestStatus(quest->GetQuestId()) != QUEST_STATUS_NONE || player->GetQuestRewardStatus(quest->GetQuestId()))
+            continue;
+        if (!player->CanTakeQuest(quest, false) || !player->CanAddQuest(quest, false))
+            continue;
+        Json lead;
+        lead["quest_id"] = quest->GetQuestId();
+        lead["title"] = quest->GetTitle();
+        lead["level"] = quest->GetQuestLevel();
+        lead["giver"] = UnitRef(giver);
+        lead["dist"] = dist;
+        offered.push_back(lead);
+    }
+
+    QuestRelationsMapBounds takes = sObjectMgr.GetCreatureQuestInvolvedRelationsMapBounds(giver->GetEntry());
+    for (auto it = takes.first; it != takes.second && turnIn.size() < most; ++it)
+    {
+        Quest const* quest = sObjectMgr.GetQuestTemplate(it->second);
+        if (!quest || player->GetQuestStatus(quest->GetQuestId()) != QUEST_STATUS_COMPLETE)
+            continue;
+        if (!player->CanRewardQuest(quest, false))
+            continue;
+        Json lead;
+        lead["quest_id"] = quest->GetQuestId();
+        lead["title"] = quest->GetTitle();
+        lead["level"] = quest->GetQuestLevel();
+        lead["taker"] = UnitRef(giver);
+        lead["dist"] = dist;
+        turnIn.push_back(lead);
+    }
+}
+
+// NPCs as characters ------------------------------------------------------------
+//
+// The control center speaks for the NPCs the party comes up to. Everything it
+// needs to write a line that belongs to this one is already in the world
+// database: the title under the name, the faction, whether it is a guard or a
+// civilian, whether it patrols, the gossip it shows when clicked, and the
+// quests it has for this player. One read, no model.
+
+std::optional<Json> Bridge::CmdNpcAbout(const BridgeInbound&, const Json& args)
+{
+    Creature* creature = FindCreature(args);
+    const std::string name = OptionalString(args, "player");
+    Player* player = nullptr;
+    if (!name.empty())
+        player = RequireOnlinePlayer(name, "player");
+    else
+    {
+        std::vector<Player*> reals = RealPlayersOnline();
+        if (!reals.empty())
+            player = reals.front();
+    }
+    CreatureInfo const* info = creature->GetCreatureInfo();
+
+    Json result;
+    result["unit"] = UnitRef(creature);
+    result["sub_name"] = info && info->SubName ? std::string(info->SubName) : std::string();
+    result["guard"] = creature->IsGuard();
+    result["civilian"] = info ? (info->ExtraFlags & CREATURE_EXTRA_FLAG_CIVILIAN) != 0 : false;
+    result["rank"] = info ? info->Rank : 0u;
+    static const char* kTypes[] = {"", "beast", "dragonkin", "demon", "elemental", "giant", "undead", "humanoid",
+                                   "critter", "mechanical", "not specified", "totem"};
+    const uint32 type = info ? info->CreatureType : 0u;
+    result["creature_type"] = type < sizeof(kTypes) / sizeof(kTypes[0]) ? kTypes[type] : "";
+
+    std::string factionName;
+    if (FactionTemplateEntry const* ft = sFactionTemplateStore.LookupEntry(creature->GetFaction()))
+        if (FactionEntry const* f = sFactionStore.LookupEntry(ft->faction))
+            if (f->name[0])
+                factionName = f->name[0];
+    result["faction"] = factionName;
+
+    switch (creature->GetDefaultMovementType())
+    {
+        case WAYPOINT_MOTION_TYPE: result["movement"] = "patrols"; break;
+        case RANDOM_MOTION_TYPE:
+        case TIMED_RANDOM_MOTION_TYPE: result["movement"] = "wanders"; break;
+        default: result["movement"] = "stands"; break;
+    }
+    result["moving"] = creature->IsMoving();
+
+    float hx = 0.0f, hy = 0.0f, hz = 0.0f, ho = 0.0f;
+    creature->GetRespawnCoord(hx, hy, hz, &ho);
+    Json home;
+    home["x"] = hx;
+    home["y"] = hy;
+    home["z"] = hz;
+    home["o"] = ho;
+    result["home"] = home;
+    result["pos"] = Position(creature);
+    if (player)
+        result["dist"] = player->GetDistance(creature);
+    else
+        result["dist"] = nullptr;
+
+    // Its own words: the texts behind its gossip menu, first option of each,
+    // up to three. They carry the client's placeholders ($N, $C, $B...), which
+    // the reader replaces.
+    Json gossip = Json::array();
+    if (const uint32 menuId = creature->GetDefaultGossipMenuId())
+    {
+        GossipMenusMapBounds bounds = sObjectMgr.GetGossipMenusMapBounds(menuId);
+        for (auto it = bounds.first; it != bounds.second && gossip.size() < 3; ++it)
+        {
+            GossipText const* text = sObjectMgr.GetGossipText(it->second.text_id);
+            if (!text)
+                continue;
+            for (int i = 0; i < MAX_GOSSIP_TEXT_OPTIONS && gossip.size() < 3; ++i)
+            {
+                const std::string& line = text->Options[i].Text_0.empty() ? text->Options[i].Text_1 : text->Options[i].Text_0;
+                if (!line.empty())
+                    gossip.push_back(line);
+            }
+        }
+    }
+    result["gossip"] = gossip;
+
+    Json offered = Json::array();
+    Json turnIn = Json::array();
+    if (player && (creature->GetUInt32Value(UNIT_NPC_FLAGS) & UNIT_NPC_FLAG_QUESTGIVER))
+        QuestsAt(player, creature, offered, turnIn, 6);
+    Json quests;
+    quests["offered"] = offered;
+    quests["turn_in"] = turnIn;
+    result["quests"] = quests;
+    return result;
+}
+
+std::optional<Json> Bridge::CmdNpcFace(const BridgeInbound&, const Json& args)
+{
+    // Turn to face a player, so the one who speaks is seen to; or, with no
+    // target, back to the way it stood when it spawned.
+    Creature* creature = FindCreature(args);
+    const std::string targetName = OptionalString(args, "target");
+    Json result;
+    result["unit"] = UnitRef(creature);
+    if (targetName.empty())
+    {
+        float x = 0.0f, y = 0.0f, z = 0.0f, o = 0.0f;
+        creature->GetRespawnCoord(x, y, z, &o);
+        creature->SetFacingTo(o);
+        result["facing"] = "home";
+        return result;
+    }
+    Player* target = RequireOnlinePlayer(targetName, "target");
+    if (target->GetMapId() != creature->GetMapId())
+        throw BridgeCommandError("'" + std::string(target->GetName()) + "' is on another map");
+    creature->SetFacingToObject(target);
+    result["facing"] = "target";
+    result["target"] = PlayerRef(target);
+    return result;
+}
+
 // Cast --------------------------------------------------------------------------
 //
 // Bots as the control center's cast: pick a character from the random-bot
@@ -407,9 +675,23 @@ namespace
 
 std::optional<Json> Bridge::CmdBotRoster(const BridgeInbound&, const Json& args)
 {
-    std::list<uint32> const& accounts = sPlayerbotAIConfig.randomBotAccounts;
+    // The pool by default; with cast=true, only the characters bot.create made.
+    // The two never mix: a made-to-order figure is not a walk-on.
+    const bool wantCast = OptionalBool(args, "cast", false);
+    std::list<uint32> accounts;
+    for (uint32 accountId : sPlayerbotAIConfig.randomBotAccounts)
+        if (sPlayerbotAIConfig.IsInCastAccountList(accountId) == wantCast)
+            accounts.push_back(accountId);
     if (accounts.empty())
+    {
+        if (wantCast)
+        {
+            Json empty;
+            empty["bots"] = Json::array();
+            return empty;
+        }
         throw BridgeCommandError("no random bot accounts exist; the module creates them on first start");
+    }
 
     std::ostringstream where;
     where << "account IN (";
@@ -542,8 +824,15 @@ std::optional<Json> Bridge::CmdBotPlace(const BridgeInbound&, const Json& args)
         Player* anchor = RequireOnlinePlayer(nearName, "near");
         const float distance = float(OptionalNumber(args, "distance", 4.0));
         const float angle = float(OptionalNumber(args, "angle", 0.0)) * M_PI_F / 180.0f;   // from where the anchor faces; 0 = in front
-        anchor->GetClosePoint(x, y, z, bot->GetObjectBoundingRadius(), distance, angle, bot);
+        // No searcher: the core's near-point search clamps the height on the
+        // searcher's own map, and a bot still on another continent (or not yet
+        // in the world) gets that continent's ground under this one's sky. Two
+        // strangers were put seventy yards under Northshire that way. Without a
+        // searcher the ground is read from the anchor's map, the one that matters.
+        anchor->GetClosePoint(x, y, z, bot->GetObjectBoundingRadius(), distance, angle);
         map = anchor->GetMapId();
+        if (z <= INVALID_HEIGHT || std::abs(z - anchor->GetPositionZ()) > 15.0f)
+            z = anchor->GetPositionZ();   // a bad lookup is worse than the anchor's own height
         o = MapManager::NormalizeOrientation(std::atan2(anchor->GetPositionY() - y, anchor->GetPositionX() - x));   // facing the anchor
     }
     else
@@ -557,6 +846,8 @@ std::optional<Json> Bridge::CmdBotPlace(const BridgeInbound&, const Json& args)
             throw BridgeCommandError("not a valid position");
     }
 
+    if (bot->isAFK())
+        bot->ToggleAFK();   // nobody wants <AFK> over the head of someone who just walked up
     if (!bot->TeleportTo(map, x, y, z, o))
         throw BridgeCommandError("the server refused the teleport");
 
@@ -685,4 +976,616 @@ std::optional<Json> Bridge::CmdWeather(const BridgeInbound&, const Json& args)
     result["grade"] = grade;
     result["permanent"] = permanent;
     return result;
+}
+
+// Cast characters ----------------------------------------------------------------
+//
+// bot.create makes a character to order: a name, a race, a class, a gender, a
+// level, and optionally a talent path, a gear quality and a look. It goes on a
+// cast account (AiPlayerbot.Bridge.CastAccountPrefix), which counts as a
+// random-bot account for the module's ownership rules - a real player may add
+// it, bot.login may log it in - but which the random-bot manager leaves alone:
+// no re-rolled level, no wandering teleport, no timed logout, no login of its
+// own accord. The character is created offline the way the module's own
+// `.bot create` does it, with the core's name rules enforced first; its spells
+// and gear for the level are finished the first time it stands in the world,
+// before the bot.login event announces it.
+//
+// This is still not a console. The only thing it can make is a player
+// character on an account the module owns, at or below the realm's level cap.
+
+#include "playerbot/ChatHelper.h"
+#include "playerbot/PlayerbotFactory.h"
+#include "playerbot/Talentspec.h"
+#include "playerbot/strategy/actions/ChangeTalentsAction.h"
+
+#include "Accounts/AccountMgr.h"
+#include "World/World.h"
+
+#include <cctype>
+#include <random>
+
+using namespace ai;   // TalentPath, ChatHelper, ChangeTalentsAction, BotRoles
+
+namespace
+{
+    uint32 MaxCharactersPerAccount()
+    {
+#ifdef MANGOSBOT_TWO
+        return 10;
+#else
+        return 9;
+#endif
+    }
+
+    std::string Lower(std::string text)
+    {
+        for (char& c : text)
+            c = char(std::tolower(static_cast<unsigned char>(c)));
+        return text;
+    }
+
+    bool AllDigits(const std::string& text)
+    {
+        if (text.empty())
+            return false;
+        for (char c : text)
+            if (!std::isdigit(static_cast<unsigned char>(c)))
+                return false;
+        return true;
+    }
+
+    std::string RandomPassword()
+    {
+        static const char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        std::string password;
+        for (int i = 0; i < 16; ++i)
+            password += alphabet[urand(0, sizeof(alphabet) - 2)];
+        return password;
+    }
+
+    // The module's premade talent paths for a class, by name. "affliction"
+    // finds "pve dps affli" the way a person would: an exact name first, then
+    // a path whose name contains the query, then a path with a word the query
+    // begins with. PvE paths are listed first in the config, so they win ties.
+    TalentPath* FindTalentPath(uint8 cls, const std::string& query)
+    {
+        std::vector<TalentPath>& paths = sPlayerbotAIConfig.classSpecs[cls].talentPath;
+        const std::string q = Lower(query);
+        for (TalentPath& path : paths)
+            if (Lower(path.name) == q)
+                return &path;
+        for (TalentPath& path : paths)
+            if (Lower(path.name).find(q) != std::string::npos)
+                return &path;
+        for (TalentPath& path : paths)
+        {
+            std::istringstream words(Lower(path.name));
+            std::string word;
+            while (words >> word)
+                if (word.size() >= 4 && q.rfind(word, 0) == 0)
+                    return &path;
+        }
+        return nullptr;
+    }
+
+    std::string TalentPathNames(uint8 cls)
+    {
+        std::string names;
+        for (TalentPath& path : sPlayerbotAIConfig.classSpecs[cls].talentPath)
+            names += (names.empty() ? "" : ", ") + path.name;
+        return names.empty() ? std::string("none configured") : names;
+    }
+
+    uint32 GearQuality(const std::string& gear)
+    {
+        if (gear == "green" || gear == "uncommon") return ITEM_QUALITY_UNCOMMON;
+        if (gear == "blue" || gear == "rare")      return ITEM_QUALITY_RARE;
+        if (gear == "purple" || gear == "epic")    return ITEM_QUALITY_EPIC;
+        throw BridgeCommandError("argument 'gear' must be green, blue or purple");
+    }
+
+    struct Look
+    {
+        uint8 skin = 0, face = 0, hairStyle = 0, hairColor = 0, facialHair = 0;
+    };
+
+    // The same choice the module makes for its random pool, from the client's
+    // own appearance tables, but from a seed: the same seed gives the same
+    // face, so a character that is ever remade looks like itself.
+    Look PickLook(uint8 race, uint8 gender, uint32 seed)
+    {
+        std::vector<uint8> facialHairs;
+        std::vector<std::pair<uint8, uint8>> faces, hairs;   // variation, colour
+        for (CharSectionsMap::const_iterator itr = sCharSectionMap.begin(); itr != sCharSectionMap.end(); ++itr)
+        {
+            CharSectionsEntry const* entry = itr->second;
+            if (entry->Race != race || entry->Gender != gender)
+                continue;
+#ifndef MANGOSBOT_TWO
+            const uint8 colour = uint8(entry->ColorIndex);
+#else
+            const uint8 colour = uint8(entry->Color);
+#endif
+            switch (entry->BaseSection)
+            {
+                case SECTION_TYPE_FACE:        faces.emplace_back(uint8(entry->VariationIndex), colour); break;
+                case SECTION_TYPE_FACIAL_HAIR: facialHairs.push_back(colour); break;
+                case SECTION_TYPE_HAIR:        hairs.emplace_back(uint8(entry->VariationIndex), colour); break;
+                default: break;
+            }
+        }
+        std::mt19937 rng(seed);
+        auto pick = [&rng](size_t count) -> size_t
+        {
+            return count ? std::uniform_int_distribution<size_t>(0, count - 1)(rng) : 0;
+        };
+        Look look;
+        if (!faces.empty())
+        {
+            const auto& face = faces[pick(faces.size())];
+            look.face = face.first;
+            look.skin = face.second;   // a face texture belongs to one skin colour; the module pairs them the same way
+        }
+        if (!hairs.empty())
+        {
+            const auto& hair = hairs[pick(hairs.size())];
+            look.hairStyle = hair.first;
+            look.hairColor = hair.second;
+        }
+        const bool noFacialHair = race == RACE_TAUREN || (gender == GENDER_FEMALE && race != RACE_NIGHTELF && race != RACE_UNDEAD);
+#ifndef MANGOSBOT_TWO
+        if (!noFacialHair && !facialHairs.empty())
+            look.facialHair = facialHairs[pick(facialHairs.size())];
+#endif
+        return look;
+    }
+}
+
+void Bridge::RegisterCastAccount(uint32 accountId)
+{
+    PlayerbotAIConfig& config = sPlayerbotAIConfig;
+    if (!config.IsInCastAccountList(accountId))
+        config.castBotAccounts.push_back(accountId);
+    if (!config.IsInRandomAccountList(accountId))
+        config.randomBotAccounts.push_back(accountId);
+}
+
+void Bridge::LoadCastAccounts()
+{
+    PlayerbotAIConfig& config = sPlayerbotAIConfig;
+    config.castBotAccounts.clear();
+
+    std::string prefix = config.bridgeCastAccountPrefix;
+    std::string randomPrefix = config.randomBotAccountPrefix;
+    AccountMgr::normalizeString(prefix);
+    AccountMgr::normalizeString(randomPrefix);
+    if (prefix.empty() || prefix.rfind(randomPrefix, 0) == 0 || randomPrefix.rfind(prefix, 0) == 0)
+    {
+        sLog.outError("Bridge: AiPlayerbot.Bridge.CastAccountPrefix ('%s') must differ from AiPlayerbot.RandomBotAccountPrefix ('%s'); bot.create is off",
+                      config.bridgeCastAccountPrefix.c_str(), config.randomBotAccountPrefix.c_str());
+        return;
+    }
+
+    std::string pattern = prefix;
+    LoginDatabase.escape_string(pattern);
+    auto rows = LoginDatabase.PQuery("SELECT id, username FROM account WHERE username LIKE '%s%%'", pattern.c_str());
+    if (!rows)
+        return;
+    do
+    {
+        Field* fields = rows->Fetch();
+        const uint32 accountId = fields[0].GetUInt32();
+        std::string username = fields[1].GetCppString();
+        AccountMgr::normalizeString(username);
+        if (username.size() <= prefix.size() || !AllDigits(username.substr(prefix.size())))
+            continue;   // some other account that happens to start the same way
+        RegisterCastAccount(accountId);
+    }
+    while (rows->NextRow());
+    if (!config.castBotAccounts.empty())
+        sLog.outString("Bridge: %zu cast account(s) loaded", config.castBotAccounts.size());
+}
+
+uint32 Bridge::GetOrCreateCastAccount(std::string& error)
+{
+    PlayerbotAIConfig& config = sPlayerbotAIConfig;
+    std::string prefix = config.bridgeCastAccountPrefix;
+    std::string randomPrefix = config.randomBotAccountPrefix;
+    AccountMgr::normalizeString(prefix);
+    AccountMgr::normalizeString(randomPrefix);
+    if (prefix.empty() || prefix.rfind(randomPrefix, 0) == 0 || randomPrefix.rfind(prefix, 0) == 0)
+    {
+        error = "AiPlayerbot.Bridge.CastAccountPrefix must differ from AiPlayerbot.RandomBotAccountPrefix";
+        return 0;
+    }
+
+    for (uint32 number = 0; number < 1000; ++number)
+    {
+        const std::string accountName = prefix + std::to_string(number);
+        uint32 accountId = sAccountMgr.GetId(accountName);
+        if (!accountId)
+        {
+            LoginDatabase.BeginTransaction();
+#ifndef MANGOSBOT_ZERO
+            AccountOpResult result = sAccountMgr.CreateAccount(accountName, RandomPassword(), MAX_EXPANSION);
+#else
+            AccountOpResult result = sAccountMgr.CreateAccount(accountName, RandomPassword());
+#endif
+            LoginDatabase.CommitTransactionDirect();
+            accountId = result == AOR_OK ? sAccountMgr.GetId(accountName) : 0;
+            if (!accountId)
+            {
+                error = "could not create cast account " + accountName;
+                return 0;
+            }
+            sLog.outString("Bridge: created cast account %s", accountName.c_str());
+        }
+        RegisterCastAccount(accountId);
+        if (sAccountMgr.GetCharactersCount(accountId) < MaxCharactersPerAccount())
+            return accountId;
+    }
+    error = "every cast account is full";
+    return 0;
+}
+
+std::optional<Json> Bridge::CmdBotCreate(const BridgeInbound&, const Json& args)
+{
+    // The name, by the core's rules, before anything is touched.
+    std::string name = RequireString(args, "name");
+    if (!normalizePlayerName(name) || ObjectMgr::CheckPlayerName(name, true) != CHAR_NAME_SUCCESS)
+        throw BridgeCommandError("'" + name + "' is not a valid character name (2 to 12 letters, no spaces or digits)");
+    if (sObjectMgr.IsReservedName(name))
+        throw BridgeCommandError("'" + name + "' is a reserved name");
+    if (!sObjectMgr.GetPlayerGuidByName(name).IsEmpty())
+        throw BridgeCommandError("a character named '" + name + "' already exists");
+
+    if (!args.contains("race") || args["race"].is_null() || !args.contains("class") || args["class"].is_null())
+        throw BridgeCommandError("arguments 'race' and 'class' are required");
+    const uint32 race = RaceId(args["race"]);
+    const uint32 cls = ClassId(args["class"]);
+    if (race == 0 || race >= MAX_RACES || !((1 << (race - 1)) & RACEMASK_ALL_PLAYABLE))
+        throw BridgeCommandError("not a playable race");
+    if (cls == 0 || cls >= MAX_CLASSES || !((1 << (cls - 1)) & CLASSMASK_ALL_PLAYABLE))
+        throw BridgeCommandError("not a playable class");
+    ChrRacesEntry const* raceEntry = sChrRacesStore.LookupEntry(race);
+    ChrClassesEntry const* classEntry = sChrClassesStore.LookupEntry(cls);
+    if (!raceEntry || !classEntry || !sObjectMgr.GetPlayerInfo(race, cls))
+        throw BridgeCommandError(std::string("a ") + (raceEntry ? raceEntry->name[0] : "?") + " cannot be a " + (classEntry ? classEntry->name[0] : "?"));
+
+    const std::string genderText = Lower(OptionalString(args, "gender"));
+    uint8 gender;
+    if (genderText == "male") gender = GENDER_MALE;
+    else if (genderText == "female") gender = GENDER_FEMALE;
+    else throw BridgeCommandError("argument 'gender' must be male or female");
+
+    const uint32 maxLevel = sWorld.getConfig(CONFIG_UINT32_MAX_PLAYER_LEVEL);
+    const uint32 level = OptionalUnsigned(args, "level", 1);
+    if (level < 1 || level > maxLevel)
+        throw BridgeCommandError("argument 'level' must be between 1 and " + std::to_string(maxLevel));
+
+    TalentPath* spec = nullptr;
+    const std::string specText = OptionalString(args, "spec");
+    if (!specText.empty())
+    {
+        spec = FindTalentPath(uint8(cls), specText);
+        if (!spec)
+            throw BridgeCommandError("no talent path like '" + specText + "' for " + classEntry->name[0] + " (" + TalentPathNames(uint8(cls)) + ")");
+    }
+    const std::string roleText = OptionalString(args, "role");
+    BotRoles role = BotRoles::BOT_ROLE_NONE;
+    if (!roleText.empty())
+    {
+        role = ChatHelper::parseRole(roleText);
+        if (role == BotRoles::BOT_ROLE_NONE)
+            throw BridgeCommandError("argument 'role' must be tank, healer or dps");
+    }
+    const std::string gear = Lower(OptionalString(args, "gear"));
+    if (!gear.empty())
+        GearQuality(gear);   // validated now, applied on arrival
+
+    uint32 seed = OptionalUnsigned(args, "look", 0);
+    if (seed == 0)
+        seed = urand(1, 0x7fffffff);
+    const Look look = PickLook(uint8(race), gender, seed);
+
+    std::string error;
+    const uint32 accountId = GetOrCreateCastAccount(error);
+    if (!accountId)
+        throw BridgeCommandError(error);
+
+    // From here on, the module's own `.bot create` sequence.
+    WorldSession* session = new WorldSession(accountId, nullptr, SEC_PLAYER,
+#ifdef MANGOSBOT_TWO
+        2, 0, LOCALE_enUS, "", 0, 0, false);
+#endif
+#ifdef MANGOSBOT_ONE
+        2, 0, LOCALE_enUS, "", 0, 0, false);
+#endif
+#ifdef MANGOSBOT_ZERO
+        0, LOCALE_enUS, "", 0);
+#endif
+    session->SetNoAnticheat();
+
+    Player* character = new Player(session);
+    if (!character->Create(sObjectMgr.GeneratePlayerLowGuid(), name, uint8(race), uint8(cls), gender,
+                           look.skin, look.face, look.hairStyle, look.hairColor, look.facialHair, 0))
+    {
+        delete character;
+        delete session;
+        throw BridgeCommandError("the core refused to create '" + name + "'");
+    }
+
+    character->setCinematic(2);
+    character->SetAtLoginFlag(AT_LOGIN_NONE);
+    sObjectAccessor.AddObject(character);
+    const ObjectGuid guid = character->GetObjectGuid();
+    const uint32 counter = character->GetGUIDLow();
+
+    if (spec)
+        sRandomPlayerbotMgr.SetValue(counter, "specNo", uint32(spec->id + 1));
+
+    if (level > 1)
+    {
+        character->SetLevel(level);
+        character->SetUInt32Value(PLAYER_XP, 0);
+        character->InitStatsForLevel(true);
+#ifdef MANGOSBOT_ZERO
+        character->InitTaxiNodes();
+#else
+        character->InitTaxiNodesForLevel();
+#endif
+        character->InitTalentForLevel();
+        character->InitPrimaryProfessions();
+        character->learnDefaultSpells();
+
+        std::ostringstream talentLog;
+        if (spec || role != BotRoles::BOT_ROLE_NONE)
+            ChangeTalentsAction::AutoSelectTalents(character, &talentLog, role);
+
+        sRandomPlayerbotMgr.SetValue(counter, "create levelup", 1);   // spells and gear for this level, on arrival
+    }
+    else
+        character->SetLevel(1);
+    if (!gear.empty())
+        sRandomPlayerbotMgr.SetValue(counter, "create gear", 1, gear);
+
+    character->SaveToDB();
+
+    // The session never took the player, so the logout is bookkeeping and the
+    // object is ours to remove and free.
+    session->LogoutPlayer();
+    sObjectAccessor.RemoveObject(character);
+    delete character;
+    delete session;
+
+    sLog.outString("Bridge: created %s, %s %s %s, level %u, on cast account %u",
+                   name.c_str(), genderText.c_str(), raceEntry->name[0], classEntry->name[0], level, accountId);
+
+    Json result;
+    result["guid"] = GuidString(guid);
+    result["name"] = name;
+    result["race"] = raceEntry->name[0];
+    result["class"] = classEntry->name[0];
+    result["race_id"] = race;
+    result["class_id"] = cls;
+    result["gender"] = genderText;
+    result["level"] = level;
+    result["look"] = seed;
+    result["spec"] = spec ? spec->name : "";
+    result["account"] = accountId;
+    return result;
+}
+
+std::optional<Json> Bridge::CmdBotDelete(const BridgeInbound&, const Json& args)
+{
+    std::string name = RequireString(args, "name");
+    if (!normalizePlayerName(name))
+        throw BridgeCommandError("'" + name + "' is not a valid character name");
+    const ObjectGuid guid = sObjectMgr.GetPlayerGuidByName(name);
+    if (guid.IsEmpty())
+        throw BridgeCommandError("no character named '" + name + "'");
+    const uint32 accountId = sObjectMgr.GetPlayerAccountIdByGUID(guid);
+    if (!sPlayerbotAIConfig.IsInCastAccountList(accountId))
+        throw BridgeCommandError("'" + name + "' is not a cast character (only characters made by bot.create can be deleted here)");
+    if (FindOnlinePlayer(name))
+        throw BridgeCommandError("'" + name + "' is in the world; bot.logout it first");
+
+    Player::DeleteFromDB(guid, accountId, true, true);
+    CharacterDatabase.PExecute("DELETE FROM ai_playerbot_random_bots WHERE bot = '%u'", guid.GetCounter());
+    sLog.outString("Bridge: deleted cast character %s", name.c_str());
+
+    Json result;
+    result["guid"] = GuidString(guid);
+    result["name"] = name;
+    result["deleted"] = true;
+    return result;
+}
+
+std::optional<Json> Bridge::CmdBotLevel(const BridgeInbound&, const Json& args)
+{
+    // Re-level a made-to-order character in place: a chapter needs it a little
+    // older, or an early random pass left it wrong. Cast characters only, and
+    // it must be in the world (add it, or bot.login it, first).
+    std::string name = RequireString(args, "name");
+    if (!normalizePlayerName(name))
+        throw BridgeCommandError("'" + name + "' is not a valid character name");
+    const ObjectGuid guid = sObjectMgr.GetPlayerGuidByName(name);
+    if (guid.IsEmpty())
+        throw BridgeCommandError("no character named '" + name + "'");
+    if (!sPlayerbotAIConfig.IsInCastAccountList(sObjectMgr.GetPlayerAccountIdByGUID(guid)))
+        throw BridgeCommandError("'" + name + "' is not a cast character (only characters made by bot.create can be re-levelled here)");
+
+    const uint32 maxLevel = sWorld.getConfig(CONFIG_UINT32_MAX_PLAYER_LEVEL);
+    const uint32 level = OptionalUnsigned(args, "level", 0);
+    if (level < 1 || level > maxLevel)
+        throw BridgeCommandError("argument 'level' must be between 1 and " + std::to_string(maxLevel));
+
+    Player* bot = FindOnlinePlayer(name);
+    if (!bot)
+        throw BridgeCommandError("'" + name + "' is not in the world; add it (/add) or bot.login it first, then set its level");
+    PlayerbotAI* ai = bot->GetPlayerbotAI();
+    if (!ai || ai->IsRealPlayer())
+        throw BridgeCommandError("'" + name + "' is not a bot");
+
+    const uint32 was = bot->GetLevel();
+    bot->SetLevel(level);
+    bot->SetUInt32Value(PLAYER_XP, 0);
+    bot->InitStatsForLevel(true);
+#ifdef MANGOSBOT_ZERO
+    bot->InitTaxiNodes();
+#else
+    bot->InitTaxiNodesForLevel();
+#endif
+    bot->InitTalentForLevel();
+    bot->InitPrimaryProfessions();
+    bot->learnDefaultSpells();
+
+    // Spells and gear the level knows, without touching the level again.
+    PlayerbotFactory factory(bot, level);
+    factory.Randomize(true, false);
+    ai->ResetStrategies();
+
+    sLog.outString("Bridge: re-levelled %s from %u to %u", name.c_str(), was, level);
+    Json result;
+    result["unit"] = PlayerRef(bot);
+    result["name"] = name;
+    result["level"] = level;
+    result["was"] = was;
+    return result;
+}
+
+// Scene pieces ---------------------------------------------------------------------
+//
+// A stranger who teleports in, speaks, and teleports out is a proof of
+// concept. These let the control center have one walk up, gesture, sit,
+// and walk off, using the module's own movement rather than the map's.
+
+std::optional<Json> Bridge::CmdBotMaster(const BridgeInbound&, const Json& args)
+{
+    // Give a bot a master for a while (a cast stranger follows the player it
+    // is approaching), or take it away. No group is joined, so the party and
+    // the companions' minds never see it; only the module's follow does.
+    Player* bot = RequireBot(RequireString(args, "bot"));
+    PlayerbotAI* ai = bot->GetPlayerbotAI();
+    Player* master = nullptr;
+    if (args.contains("master") && !args["master"].is_null())
+    {
+        master = RequireOnlinePlayer(RequireString(args, "master"), "master");
+        PlayerbotAI* masterAi = master->GetPlayerbotAI();
+        if (masterAi && !masterAi->IsRealPlayer())
+            throw BridgeCommandError("'" + std::string(master->GetName()) + "' is a bot; a master must be a real player");
+    }
+    ai->SetMaster(master);
+    ai->ResetStrategies();
+    Json result;
+    result["unit"] = PlayerRef(bot);
+    result["master"] = master ? PlayerRef(master) : Json(nullptr);
+    return result;
+}
+
+std::optional<Json> Bridge::CmdBotEmote(const BridgeInbound&, const Json& args)
+{
+    // An animation emote (wave, bow, point...) by the client's id. The text
+    // emote that prints a line is bot.say on the emote channel; this is the
+    // body moving.
+    Player* bot = RequireBot(RequireString(args, "bot"));
+    const uint32 emote = OptionalUnsigned(args, "emote", 0);
+    if (emote == 0)
+        throw BridgeCommandError("argument 'emote' must be an emote id");
+    bot->HandleEmoteCommand(emote);
+    Json result;
+    result["unit"] = PlayerRef(bot);
+    result["emote"] = emote;
+    return result;
+}
+
+std::optional<Json> Bridge::CmdBotFace(const BridgeInbound&, const Json& args)
+{
+    // Turn to face another character. Two strangers talking to each other
+    // look at each other; left alone they both face whoever placed them.
+    Player* bot = RequireBot(RequireString(args, "bot"));
+    Player* target = RequireOnlinePlayer(RequireString(args, "target"), "target");
+    if (target == bot)
+        throw BridgeCommandError("a character cannot face itself");
+    if (target->GetMapId() != bot->GetMapId())
+        throw BridgeCommandError("'" + std::string(target->GetName()) + "' is on another map");
+    bot->SetFacingToObject(target);
+    Json result;
+    result["unit"] = PlayerRef(bot);
+    result["target"] = PlayerRef(target);
+    return result;
+}
+
+std::optional<Json> Bridge::CmdBotStance(const BridgeInbound&, const Json& args)
+{
+    Player* bot = RequireBot(RequireString(args, "bot"));
+    const std::string state = OptionalString(args, "state", "stand");
+    uint8 stand;
+    if (state == "sit")        stand = UNIT_STAND_STATE_SIT;
+    else if (state == "kneel") stand = UNIT_STAND_STATE_KNEEL;
+    else if (state == "stand") stand = UNIT_STAND_STATE_STAND;
+    else throw BridgeCommandError("argument 'state' must be sit, kneel or stand");
+    bot->SetStandState(stand);
+    Json result;
+    result["unit"] = PlayerRef(bot);
+    result["state"] = state;
+    return result;
+}
+
+bool Bridge::NeedsOutfit(Player* bot)
+{
+    if (!bot || !sPlayerbotAIConfig.IsCastBot(bot->GetGUIDLow()))
+        return false;
+    const uint32 counter = bot->GetGUIDLow();
+    return sRandomPlayerbotMgr.GetValue(counter, "create levelup") || sRandomPlayerbotMgr.GetValue(counter, "create gear");
+}
+
+void Bridge::OutfitOnArrival(Player* bot)
+{
+    const uint32 counter = bot->GetGUIDLow();
+    if (sRandomPlayerbotMgr.GetValue(counter, "create levelup"))
+    {
+        // The module's incremental pass: keeps the level and the talents it
+        // was made with, learns the spells a character of that level knows,
+        // and equips it accordingly.
+        PlayerbotFactory factory(bot, bot->GetLevel());
+        factory.Randomize(true, false);
+        sRandomPlayerbotMgr.SetValue(counter, "create levelup", 0);
+    }
+    if (sRandomPlayerbotMgr.GetValue(counter, "create gear"))
+    {
+        const std::string gear = sRandomPlayerbotMgr.GetData(counter, "create gear");
+        try
+        {
+            PlayerbotFactory factory(bot, bot->GetLevel(), GearQuality(gear));
+            factory.EquipGear();
+        }
+        catch (const BridgeCommandError&)
+        {
+            // an unknown word could only have got there by hand; nothing to do
+        }
+        sRandomPlayerbotMgr.SetValue(counter, "create gear", 0);
+    }
+    sLog.outString("Bridge: %s outfitted for level %u", bot->GetName(), bot->GetLevel());
+}
+
+void Bridge::FlushPendingOutfits()
+{
+    for (auto it = pendingOutfits_.begin(); it != pendingOutfits_.end();)
+    {
+        Player* bot = sObjectMgr.GetPlayer(*it);
+        if (!bot)
+        {
+            it = pendingOutfits_.erase(it);
+            continue;
+        }
+        if (!bot->IsInWorld() || bot->IsBeingTeleported() || !bot->GetPlayerbotAI())
+        {
+            ++it;
+            continue;
+        }
+        OutfitOnArrival(bot);
+        it = pendingOutfits_.erase(it);
+    }
 }

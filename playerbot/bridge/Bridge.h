@@ -64,6 +64,8 @@ namespace BridgeProtocol
     constexpr char EV_SCENE[] = "scene";
     constexpr char EV_UNIT_ENTERED[] = "unit.entered";
     constexpr char EV_UNIT_LEFT[] = "unit.left";
+    constexpr char EV_MOVEMENT[] = "movement";
+    constexpr char EV_BOT_ACTIVITY[] = "bot.activity";
 
     constexpr uint32 DUPLICATE_WINDOW_MS = 2000;
 }
@@ -101,6 +103,13 @@ public:
     void OnBotLogin(Player* bot);
     void OnBotLogout(Player* bot);
 
+    // Cast accounts (bot.create). Called from Start(); safe to call again.
+    void LoadCastAccounts();
+
+    // A character a client logged in through bot.login. The random-bot manager
+    // leaves such a character's level and place alone while the request stands.
+    bool IsRequestedLogin(uint32 counter) const { return requestedLogins_.count(ObjectGuid(HIGHGUID_PLAYER, counter)) > 0; }
+
     // Thread-safe. Wraps data in the event envelope and broadcasts it.
     void Emit(const char* name, Json data);
 
@@ -129,6 +138,12 @@ private:
         uint32 level = 0;
         bool alive = true;
         bool inCombat = false;
+        bool moving = false;       // real players only: the last movement state announced
+        uint32 stillSince = 0;     // ms clock when the player last came to rest, 0 while moving
+        std::string activity;      // companions only: the module's last executed action, as announced
+        ObjectGuid rpgTarget;      // the NPC the companion was heading for, as announced
+        std::string travel;        // where the companion was travelling, as announced
+        uint32 activityAt = 0;     // ms clock of the last bot.activity, for the throttle
     };
 
     // Dispatch and replies
@@ -172,6 +187,25 @@ private:
     std::optional<Json> CmdBotStrategy(const BridgeInbound& in, const Json& args);
     std::optional<Json> CmdPlayerSay(const BridgeInbound& in, const Json& args);
     std::optional<Json> CmdWeather(const BridgeInbound& in, const Json& args);
+    // Characters made to order (BridgeCommands.cpp, "Cast characters")
+    std::optional<Json> CmdBotCreate(const BridgeInbound& in, const Json& args);
+    std::optional<Json> CmdBotDelete(const BridgeInbound& in, const Json& args);
+    std::optional<Json> CmdBotLevel(const BridgeInbound& in, const Json& args);
+    // Scene pieces (BridgeCommands.cpp): what a cast stranger can do besides speak
+    std::optional<Json> CmdBotMaster(const BridgeInbound& in, const Json& args);
+    std::optional<Json> CmdBotEmote(const BridgeInbound& in, const Json& args);
+    std::optional<Json> CmdBotStance(const BridgeInbound& in, const Json& args);
+    std::optional<Json> CmdBotFace(const BridgeInbound& in, const Json& args);
+    std::optional<Json> CmdQuestNearby(const BridgeInbound& in, const Json& args);
+    std::optional<Json> CmdNpcAbout(const BridgeInbound& in, const Json& args);
+    std::optional<Json> CmdNpcFace(const BridgeInbound& in, const Json& args);
+    static void QuestsAt(Player* player, Creature* giver, Json& offered, Json& turnIn, size_t most);
+    static uint32 GetOrCreateCastAccount(std::string& error);
+    static void RegisterCastAccount(uint32 accountId);
+    static bool NeedsOutfit(Player* bot);
+    void OutfitOnArrival(Player* bot);  // spells and gear for the level it was made at, once it stands in the world with its AI
+    void FlushPendingOutfits();         // every world tick, before pending logins are announced
+    void FlushPendingAttach();          // every world tick: give bot.add's characters their master once they stand in the world
 
     // Command helpers
     static Player* FindOnlinePlayer(const std::string& name);
@@ -199,6 +233,8 @@ private:
     std::set<ObjectGuid> bubbleReady_;                                     // real players whose bubble has a baseline
     std::set<ObjectGuid> pendingLogins_;                                   // bots the module has that the core has not put in the world yet
     std::set<ObjectGuid> requestedLogins_;                                 // bots a client logged in through bot.login; announced even without a master
+    std::set<ObjectGuid> pendingOutfits_;                                  // made-to-order bots that still need their level's spells and gear; announced after
+    std::map<ObjectGuid, std::pair<ObjectGuid, uint32>> pendingAttach_;    // bot.add on a pool or cast character: bot -> (master, deadline ms)
 };
 
 #define sBridge Bridge::instance()

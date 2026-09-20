@@ -4,6 +4,10 @@
 #include "playerbot/bridge/Bridge.h"
 
 #include "playerbot/PlayerbotAI.h"
+#include "playerbot/GuidPosition.h"
+#include "playerbot/TravelMgr.h"
+#include "playerbot/strategy/Action.h"
+#include "playerbot/strategy/Engine.h"
 #include "playerbot/PlayerbotAIConfig.h"
 #include "playerbot/playerbot.h"
 
@@ -216,6 +220,7 @@ Json Bridge::NearbyUnit(Player* center, Unit* unit)
     entry["hostile"] = center->IsEnemy(unit);
     entry["alive"] = unit->IsAlive();
     entry["in_combat"] = unit->IsInCombat();
+    entry["moving"] = unit->IsMoving();
     if (unit->GetTypeId() == TYPEID_UNIT)
     {
         const uint32 flags = unit->GetUInt32Value(UNIT_NPC_FLAGS);
@@ -395,6 +400,86 @@ void Bridge::WatchMember(Player* player)
         Emit(inCombat ? EV_COMBAT_STARTED : EV_COMBAT_ENDED, data);
         prev.inCombat = inCombat;
     }
+
+    // Moving or standing, for the real players only. A stranger placed in
+    // front of someone running between zones is never seen; the control
+    // center stages scenes for a player who has stopped. Starting to move is
+    // reported at once; coming to rest is reported after two seconds of it,
+    // so a pause at a signpost is not a stop.
+    PlayerbotAI* ai = player->GetPlayerbotAI();
+    if (!ai || ai->IsRealPlayer())
+    {
+        const uint32 now = WorldTimer::getMSTime();
+        const bool movingNow = player->IsMoving() || player->IsTaxiFlying();
+        if (movingNow)
+        {
+            prev.stillSince = 0;
+            if (!prev.moving)
+            {
+                prev.moving = true;
+                Json data;
+                data["unit"] = PlayerRef(player);
+                data["moving"] = true;
+                Emit(EV_MOVEMENT, data);
+            }
+        }
+        else if (prev.moving)
+        {
+            if (prev.stillSince == 0)
+                prev.stillSince = now;
+            else if (WorldTimer::getMSTimeDiff(prev.stillSince, now) >= 2000)
+            {
+                prev.moving = false;
+                Json data;
+                data["unit"] = PlayerRef(player);
+                data["moving"] = false;
+                Emit(EV_MOVEMENT, data);
+            }
+        }
+    }
+    // What a companion is doing, for the control center to put in words: the
+    // module's own last executed action, the NPC it is heading for, and where
+    // it is travelling. Reported when any of it changes, at most every two
+    // seconds; a change inside the throttle is reported when the window ends.
+    else if (ai->HasRealPlayerMaster())
+    {
+        const uint32 now = WorldTimer::getMSTime();
+        std::string action;
+        if (Engine* engine = ai->GetCurrentEngine())
+            if (const Action* last = engine->GetLastExecutedAction())
+                action = const_cast<Action*>(last)->getName();   // getName is not const in the module
+        ObjectGuid rpgTarget;
+        std::string travel;
+        if (AiObjectContext* context = ai->GetAiObjectContext())
+        {
+            rpgTarget = context->GetValue<GuidPosition>("rpg target")->Get();
+            if (TravelTarget* target = context->GetValue<TravelTarget*>("travel target")->Get())
+                if (target->GetStatus() == TravelStatus::TRAVEL_STATUS_TRAVEL || target->GetStatus() == TravelStatus::TRAVEL_STATUS_WORK)
+                    if (TravelDestination* destination = target->GetDestination())
+                        travel = destination->GetTitle();
+        }
+        const bool changed = action != prev.activity || rpgTarget != prev.rpgTarget || travel != prev.travel;
+        if (changed && (prev.activityAt == 0 || WorldTimer::getMSTimeDiff(prev.activityAt, now) >= 2000))
+        {
+            prev.activity = action;
+            prev.rpgTarget = rpgTarget;
+            prev.travel = travel;
+            prev.activityAt = now;
+            Json data;
+            data["unit"] = PlayerRef(player);
+            data["action"] = action;
+            Unit* target = rpgTarget ? player->GetMap()->GetUnit(rpgTarget) : nullptr;
+            data["target"] = target ? UnitRef(target) : Json(nullptr);
+            data["destination"] = travel;
+            Player* master = ai->GetMaster();
+            if (master && master->GetMapId() == player->GetMapId())
+                data["dist"] = player->GetDistance(master);
+            else
+                data["dist"] = nullptr;
+            data["moving"] = player->IsMoving();
+            Emit(EV_BOT_ACTIVITY, data);
+        }
+    }
 }
 
 // At the bubble interval: zone and area need a terrain lookup, so they are not read every tick.
@@ -538,9 +623,19 @@ void Bridge::Snapshot()
 // sent from the world tick if it has to.
 void Bridge::OnBotLogin(Player* bot)
 {
-    if (!bot || !server_.IsRunning() || server_.ClientCount() == 0)
+    if (!bot || !server_.IsRunning())
         return;
-    if (!bot->IsInWorld())
+    // A character made to order arrives with the level it was given and the
+    // spells and gear of a level 1. Its outfit is finished on the world tick,
+    // once the module has given it an AI, and the bot.login event waits for
+    // that: by the time a client hears of it, the character is complete and
+    // nothing the client sets on it afterwards is reset by the outfitting.
+    const bool outfitting = NeedsOutfit(bot);
+    if (outfitting)
+        pendingOutfits_.insert(bot->GetObjectGuid());
+    if (server_.ClientCount() == 0)
+        return;
+    if (!bot->IsInWorld() || outfitting)
     {
         pendingLogins_.insert(bot->GetObjectGuid());
         return;
@@ -558,7 +653,14 @@ bool Bridge::Announces(Player* bot) const
         return false;
     PlayerbotAI* ai = bot->GetPlayerbotAI();
     if (ai && ai->GetMaster())
-        return true;
+    {
+        // A pool bot grouped under another pool bot has a master too; the
+        // first real session showed twenty-eight of those "logging out" at
+        // shutdown. Only a real player's bots are anyone's business.
+        PlayerbotAI* masterAi = ai->GetMaster()->GetPlayerbotAI();
+        if (!masterAi || masterAi->IsRealPlayer())
+            return true;
+    }
     const ObjectGuid guid = bot->GetObjectGuid();
     return tracked_.count(guid) > 0 || requestedLogins_.count(guid) > 0;
 }
@@ -567,6 +669,10 @@ void Bridge::EmitBotLogin(Player* bot)
 {
     if (!Announces(bot))
         return;
+    // A pool bot idles as <AFK> between the module's activity checks; a
+    // character announced to a client is about to be looked at.
+    if (bot->isAFK())
+        bot->ToggleAFK();
     Json data;
     data["bot"] = PlayerRef(bot);
     PlayerbotAI* ai = bot->GetPlayerbotAI();
@@ -589,7 +695,7 @@ void Bridge::FlushPendingLogins()
         Player* bot = sObjectMgr.GetPlayer(*it);
         if (!bot)                       // gone again before it ever arrived
             it = pendingLogins_.erase(it);
-        else if (bot->IsInWorld())
+        else if (bot->IsInWorld() && pendingOutfits_.count(*it) == 0)
         {
             EmitBotLogin(bot);
             it = pendingLogins_.erase(it);
@@ -602,7 +708,10 @@ void Bridge::FlushPendingLogins()
 void Bridge::OnBotLogout(Player* bot)
 {
     if (bot)
+    {
         pendingLogins_.erase(bot->GetObjectGuid());   // never announce a login that ended first
+        pendingOutfits_.erase(bot->GetObjectGuid());  // it will be outfitted next time it arrives
+    }
     if (!bot || !server_.IsRunning() || server_.ClientCount() == 0)
         return;
     const bool announce = Announces(bot);
@@ -784,7 +893,11 @@ void Bridge::ParseChat(Player* receiver, const WorldPacket& packet)
     p >> textLen >> text;
 
     const bool monster = IsMonsterChat(type);
-    const std::string senderKey = monster ? senderName : GuidString(sender);
+    // A whisper reaches the bridge twice when both ends are hooked: the
+    // recipient's copy names the speaker, the speaker's own copy (INFORM)
+    // names the recipient. Key both on the speaker so the second is dropped.
+    const ObjectGuid speaker = type == CHAT_MSG_WHISPER_INFORM ? receiver->GetObjectGuid() : sender;
+    const std::string senderKey = monster ? senderName : GuidString(speaker);
     if (IsDuplicate(std::string("chat|") + channel + "|" + senderKey + "|" + text))
         return;
 

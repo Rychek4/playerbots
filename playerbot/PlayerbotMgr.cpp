@@ -507,7 +507,10 @@ void PlayerbotHolder::OnBotLogin(Player * const bot)
         else
             bot->GetPlayerbotAI()->SetPlayerFriend(false);
 
-        if (sPlayerbotAIConfig.instantRandomize && !sPlayerbotAIConfig.disableRandomLevels && !bot->GetTotalPlayedTime() && !sPlayerbotAIConfig.IsFreeAltBot(bot))
+        // A character made to order, or one a bridge client asked for by name, keeps
+        // the level it was given: the first login must not re-roll it and send it off.
+        if (sPlayerbotAIConfig.instantRandomize && !sPlayerbotAIConfig.disableRandomLevels && !bot->GetTotalPlayedTime() && !sPlayerbotAIConfig.IsFreeAltBot(bot)
+            && !sPlayerbotAIConfig.IsCastBot(bot->GetGUIDLow()) && !sBridge.IsRequestedLogin(bot->GetGUIDLow()))
         {
             sRandomPlayerbotMgr.InstaRandomize(bot);
         }

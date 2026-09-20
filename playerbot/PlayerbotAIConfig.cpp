@@ -283,6 +283,7 @@ bool PlayerbotAIConfig::Initialize()
     bridgeBubbleInterval = config.GetIntDefault("AiPlayerbot.Bridge.BubbleInterval", 500);
     bridgeSceneRadius = config.GetFloatDefault("AiPlayerbot.Bridge.SceneRadius", 40.0f);
     bridgeMaxClients = config.GetIntDefault("AiPlayerbot.Bridge.MaxClients", 4);
+    bridgeCastAccountPrefix = config.GetStringDefault("AiPlayerbot.Bridge.CastAccountPrefix", "castbot");
 
     perfMonEnabled = config.GetBoolDefault("AiPlayerbot.PerfMonEnabled", false);
     bExplicitDbStoreSave = config.GetBoolDefault("AiPlayerbot.ExplicitDbStoreSave", false);
@@ -844,6 +845,18 @@ bool PlayerbotAIConfig::Initialize()
 bool PlayerbotAIConfig::IsInRandomAccountList(uint32 id)
 {
     return find(randomBotAccounts.begin(), randomBotAccounts.end(), id) != randomBotAccounts.end();
+}
+
+bool PlayerbotAIConfig::IsInCastAccountList(uint32 id)
+{
+    return find(castBotAccounts.begin(), castBotAccounts.end(), id) != castBotAccounts.end();
+}
+
+bool PlayerbotAIConfig::IsCastBot(uint32 guid)
+{
+    if (castBotAccounts.empty())
+        return false;
+    return IsInCastAccountList(sObjectMgr.GetPlayerAccountIdByGUID(ObjectGuid(HIGHGUID_PLAYER, guid)));
 }
 
 bool PlayerbotAIConfig::IsFreeAltBot(uint32 guid)

@@ -398,6 +398,7 @@ public:
     template<class T>
     T* GetStrategy(const std::string& name, BotState type);
     BotState GetState() { return currentState; };
+    Engine* GetCurrentEngine() { return currentEngine; }   // the bridge reports the last executed action from it
     void ResetStrategies(bool autoLoad = true);
     void ReInitCurrentEngine();
     void Reset(bool full = false);
