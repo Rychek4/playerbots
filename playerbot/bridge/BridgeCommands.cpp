@@ -406,6 +406,12 @@ std::optional<Json> Bridge::CmdQuestNearby(const BridgeInbound&, const Json& arg
 // The quests one creature offers the player and would take from them, with
 // the player's standing on each: only what can be taken now, only what can be
 // turned in now. Appended to the two lists up to `most` each.
+//
+// Each lead carries the quest's own text as well as its title: `details`, what
+// the giver says the trouble is, and `objectives`, what is to be done. A title
+// says a farmer has work; the text says the boars are in her vines. It goes
+// out with the client's placeholders ($N, $C, $B...) still in, as gossip does,
+// for the reader to fill for whoever is reading.
 void Bridge::QuestsAt(Player* player, Creature* giver, Json& offered, Json& turnIn, size_t most)
 {
     const float dist = player->GetDistance(giver);
@@ -426,6 +432,8 @@ void Bridge::QuestsAt(Player* player, Creature* giver, Json& offered, Json& turn
         lead["level"] = quest->GetQuestLevel();
         lead["giver"] = UnitRef(giver);
         lead["dist"] = dist;
+        lead["details"] = quest->GetDetails();
+        lead["objectives"] = quest->GetObjectives();
         offered.push_back(lead);
     }
 
@@ -443,6 +451,8 @@ void Bridge::QuestsAt(Player* player, Creature* giver, Json& offered, Json& turn
         lead["level"] = quest->GetQuestLevel();
         lead["taker"] = UnitRef(giver);
         lead["dist"] = dist;
+        lead["details"] = quest->GetDetails();
+        lead["objectives"] = quest->GetObjectives();
         turnIn.push_back(lead);
     }
 }
