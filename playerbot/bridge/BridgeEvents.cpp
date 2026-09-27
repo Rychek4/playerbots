@@ -156,6 +156,10 @@ Json Bridge::UnitRef(Unit* unit)
     ref["kind"] = unit->GetObjectGuid().IsPet() ? "pet" : "creature";
     ref["level"] = unit->GetLevel();
     ref["entry"] = unit->GetEntry();
+    // 0 male, 1 female, 2 neither (a wolf, an elemental), from the model the
+    // creature wears - the same field a player's comes from. The narrator
+    // gives an NPC a man's or a woman's voice by it.
+    ref["gender"] = uint32(unit->getGender());
     if (unit->GetTypeId() == TYPEID_UNIT)
     {
         if (CreatureInfo const* info = static_cast<Creature*>(unit)->GetCreatureInfo())
