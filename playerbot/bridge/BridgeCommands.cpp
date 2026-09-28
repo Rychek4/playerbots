@@ -869,7 +869,7 @@ std::optional<Json> Bridge::CmdBotPlace(const BridgeInbound&, const Json& args)
     if (walking)
     {
         bot->SetStandState(UNIT_STAND_STATE_STAND);
-        bot->GetMotionMaster()->MovePoint(0, Position(x, y, z, o), FORCED_MOVEMENT_WALK);
+        bot->GetMotionMaster()->MovePoint(0, ::Position(x, y, z, o), FORCED_MOVEMENT_WALK);   // the game's Position; Bridge::Position is ours
     }
     else if (!bot->TeleportTo(map, x, y, z, o))
         throw BridgeCommandError("the server refused the teleport");
