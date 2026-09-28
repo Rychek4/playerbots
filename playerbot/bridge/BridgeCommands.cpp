@@ -858,7 +858,20 @@ std::optional<Json> Bridge::CmdBotPlace(const BridgeInbound&, const Json& args)
 
     if (bot->isAFK())
         bot->ToggleAFK();   // nobody wants <AFK> over the head of someone who just walked up
-    if (!bot->TeleportTo(map, x, y, z, o))
+
+    // Walking there instead of appearing there. A bot already standing about
+    // that is borrowed for a moment has to be seen to come over, not blink
+    // onto its spot; the spot and the facing at the end are the teleport's,
+    // only the way there differs. The narrator holds it first (+stay, no
+    // rpg, travel or grind), and the module's stay does nothing to a bot that
+    // is moving, so the walk is not undone. Another map has no walk to it.
+    const bool walking = OptionalBool(args, "walk", false) && bot->IsInWorld() && bot->GetMapId() == map;
+    if (walking)
+    {
+        bot->SetStandState(UNIT_STAND_STATE_STAND);
+        bot->GetMotionMaster()->MovePoint(0, Position(x, y, z, o), FORCED_MOVEMENT_WALK);
+    }
+    else if (!bot->TeleportTo(map, x, y, z, o))
         throw BridgeCommandError("the server refused the teleport");
 
     Json pos;
@@ -871,6 +884,7 @@ std::optional<Json> Bridge::CmdBotPlace(const BridgeInbound&, const Json& args)
     result["unit"] = PlayerRef(bot);
     result["map"] = map;
     result["pos"] = pos;
+    result["walking"] = walking;   // where it is going, when it is not there yet
     return result;
 }
 
