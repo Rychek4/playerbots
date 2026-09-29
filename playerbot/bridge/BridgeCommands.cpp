@@ -579,86 +579,6 @@ std::optional<Json> Bridge::CmdNpcFace(const BridgeInbound&, const Json& args)
     return result;
 }
 
-std::optional<Json> Bridge::CmdNpcMove(const BridgeInbound&, const Json& args)
-{
-    // Walk somebody who lives here: over to a player (`to`), along beside
-    // one (`follow`), or back where they belong (`home`). Nothing is saved:
-    // where a creature stands lives only in memory, so a restart, an area
-    // unloading or a death puts everyone back at their spawn whatever this
-    // did. `home` is how a scene ends tidily, not a safety net.
-    Creature* creature = FindCreature(args);
-    const std::string mode = RequireString(args, "mode");
-    MotionMaster* motion = creature->GetMotionMaster();
-    Json result;
-    result["unit"] = UnitRef(creature);
-    result["mode"] = mode;
-
-    if (mode == "home")
-    {
-        // Their own movement back first (standing, wandering, a patrol),
-        // then the walk to where it starts; the core pops back to that
-        // movement on arrival. One more than 150 yards out is despawned and
-        // respawned at home by the core itself.
-        motion->Initialize();
-        motion->MoveTargetedHome(false);
-        return result;
-    }
-    if (mode != "to" && mode != "follow")
-        throw BridgeCommandError("argument 'mode' must be to, follow or home");
-    if (!creature->IsAlive())
-        throw BridgeCommandError("the creature is dead");
-    if (creature->IsInCombat())
-        throw BridgeCommandError("the creature is in a fight");
-    // Only somebody who stands about or wanders. A patrol or an escort walks
-    // a path its own script owns, and moving it would fight that script.
-    const MovementGeneratorType own = creature->GetDefaultMovementType();
-    if (own != IDLE_MOTION_TYPE && own != RANDOM_MOTION_TYPE)
-        throw BridgeCommandError("the creature keeps its own path (a patrol or an escort)");
-    const MovementGeneratorType now = motion->GetCurrentMovementGeneratorType();
-    if (now != IDLE_MOTION_TYPE && now != RANDOM_MOTION_TYPE && now != POINT_MOTION_TYPE
-            && now != FOLLOW_MOTION_TYPE && now != HOME_MOTION_TYPE)
-        throw BridgeCommandError("the creature is being moved by something else");
-
-    Player* target = RequireOnlinePlayer(RequireString(args, "target"), "target");
-    if (target->GetMapId() != creature->GetMapId())
-        throw BridgeCommandError("'" + std::string(target->GetName()) + "' is on another map");
-    const float distance = float(OptionalNumber(args, "distance", 3.0));
-    creature->SetStandState(UNIT_STAND_STATE_STAND);
-    result["target"] = PlayerRef(target);
-
-    if (mode == "follow")
-    {
-        // As the main movement, so nothing of its own pulls it away while it
-        // walks with the party; `home` gives its own movement back.
-        const float angle = float(OptionalNumber(args, "angle", 90.0)) * M_PI_F / 180.0f;   // 90 = at the player's side
-        motion->MoveFollow(target, distance, angle, true);
-        return result;
-    }
-
-    // `to`: stop short of the player on the line between them, so the walk
-    // ends facing them. The ground is read without a searcher, from the
-    // player's map, as bot.place does.
-    float x, y, z;
-    target->GetNearPoint(nullptr, x, y, z, creature->GetObjectBoundingRadius(),
-                         distance + target->GetObjectBoundingRadius() + creature->GetObjectBoundingRadius(),
-                         target->GetAngle(creature));
-    if (z <= INVALID_HEIGHT || std::abs(z - target->GetPositionZ()) > 15.0f)
-        z = target->GetPositionZ();
-    const float o = MapManager::NormalizeOrientation(std::atan2(target->GetPositionY() - y, target->GetPositionX() - x));
-    // Their own movement is set aside under an idle one, so a wanderer stays
-    // where it walked to instead of wandering straight back; `home` restores it.
-    motion->Clear(false, true);
-    motion->MoveIdle();
-    motion->MovePoint(0, ::Position(x, y, z, o), FORCED_MOVEMENT_WALK);   // the game's Position; Bridge::Position is ours
-    Json pos;
-    pos["x"] = x;
-    pos["y"] = y;
-    pos["z"] = z;
-    pos["o"] = o;
-    result["pos"] = pos;
-    return result;
-}
-
 // Cast --------------------------------------------------------------------------
 //
 // Bots as the control center's cast: pick a character from the random-bot
@@ -761,6 +681,88 @@ namespace
             return BotState::BOT_STATE_ALL;
         throw BridgeCommandError("unknown state '" + name + "' (combat, non combat, dead, reaction, all)");
     }
+}
+
+// Moving somebody who lives here, after the helpers it reads its arguments with.
+
+std::optional<Json> Bridge::CmdNpcMove(const BridgeInbound&, const Json& args)
+{
+    // Walk somebody who lives here: over to a player (`to`), along beside
+    // one (`follow`), or back where they belong (`home`). Nothing is saved:
+    // where a creature stands lives only in memory, so a restart, an area
+    // unloading or a death puts everyone back at their spawn whatever this
+    // did. `home` is how a scene ends tidily, not a safety net.
+    Creature* creature = FindCreature(args);
+    const std::string mode = RequireString(args, "mode");
+    MotionMaster* motion = creature->GetMotionMaster();
+    Json result;
+    result["unit"] = UnitRef(creature);
+    result["mode"] = mode;
+
+    if (mode == "home")
+    {
+        // Their own movement back first (standing, wandering, a patrol),
+        // then the walk to where it starts; the core pops back to that
+        // movement on arrival. One more than 150 yards out is despawned and
+        // respawned at home by the core itself.
+        motion->Initialize();
+        motion->MoveTargetedHome(false);
+        return result;
+    }
+    if (mode != "to" && mode != "follow")
+        throw BridgeCommandError("argument 'mode' must be to, follow or home");
+    if (!creature->IsAlive())
+        throw BridgeCommandError("the creature is dead");
+    if (creature->IsInCombat())
+        throw BridgeCommandError("the creature is in a fight");
+    // Only somebody who stands about or wanders. A patrol or an escort walks
+    // a path its own script owns, and moving it would fight that script.
+    const MovementGeneratorType own = creature->GetDefaultMovementType();
+    if (own != IDLE_MOTION_TYPE && own != RANDOM_MOTION_TYPE)
+        throw BridgeCommandError("the creature keeps its own path (a patrol or an escort)");
+    const MovementGeneratorType now = motion->GetCurrentMovementGeneratorType();
+    if (now != IDLE_MOTION_TYPE && now != RANDOM_MOTION_TYPE && now != POINT_MOTION_TYPE
+            && now != FOLLOW_MOTION_TYPE && now != HOME_MOTION_TYPE)
+        throw BridgeCommandError("the creature is being moved by something else");
+
+    Player* target = RequireOnlinePlayer(RequireString(args, "target"), "target");
+    if (target->GetMapId() != creature->GetMapId())
+        throw BridgeCommandError("'" + std::string(target->GetName()) + "' is on another map");
+    const float distance = float(OptionalNumber(args, "distance", 3.0));
+    creature->SetStandState(UNIT_STAND_STATE_STAND);
+    result["target"] = PlayerRef(target);
+
+    if (mode == "follow")
+    {
+        // As the main movement, so nothing of its own pulls it away while it
+        // walks with the party; `home` gives its own movement back.
+        const float angle = float(OptionalNumber(args, "angle", 90.0)) * M_PI_F / 180.0f;   // 90 = at the player's side
+        motion->MoveFollow(target, distance, angle, true);
+        return result;
+    }
+
+    // `to`: stop short of the player on the line between them, so the walk
+    // ends facing them. The ground is read without a searcher, from the
+    // player's map, as bot.place does.
+    float x, y, z;
+    target->GetNearPoint(nullptr, x, y, z, creature->GetObjectBoundingRadius(),
+                         distance + target->GetObjectBoundingRadius() + creature->GetObjectBoundingRadius(),
+                         target->GetAngle(creature));
+    if (z <= INVALID_HEIGHT || std::abs(z - target->GetPositionZ()) > 15.0f)
+        z = target->GetPositionZ();
+    const float o = MapManager::NormalizeOrientation(std::atan2(target->GetPositionY() - y, target->GetPositionX() - x));
+    // Their own movement is set aside under an idle one, so a wanderer stays
+    // where it walked to instead of wandering straight back; `home` restores it.
+    motion->Clear(false, true);
+    motion->MoveIdle();
+    motion->MovePoint(0, ::Position(x, y, z, o), FORCED_MOVEMENT_WALK);   // the game's Position; Bridge::Position is ours
+    Json pos;
+    pos["x"] = x;
+    pos["y"] = y;
+    pos["z"] = z;
+    pos["o"] = o;
+    result["pos"] = pos;
+    return result;
 }
 
 std::optional<Json> Bridge::CmdBotRoster(const BridgeInbound&, const Json& args)
