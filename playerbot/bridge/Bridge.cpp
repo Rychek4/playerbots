@@ -45,6 +45,7 @@ Bridge::Bridge()
     handlers_["quest.nearby"] = &Bridge::CmdQuestNearby;
     handlers_["npc.about"] = &Bridge::CmdNpcAbout;
     handlers_["npc.face"] = &Bridge::CmdNpcFace;
+    handlers_["npc.move"] = &Bridge::CmdNpcMove;
 }
 
 Bridge::~Bridge()
