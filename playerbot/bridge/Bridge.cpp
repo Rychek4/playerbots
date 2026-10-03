@@ -43,6 +43,7 @@ Bridge::Bridge()
     handlers_["bot.stance"] = &Bridge::CmdBotStance;
     handlers_["bot.face"] = &Bridge::CmdBotFace;
     handlers_["quest.nearby"] = &Bridge::CmdQuestNearby;
+    handlers_["world.places"] = &Bridge::CmdWorldPlaces;
     handlers_["npc.about"] = &Bridge::CmdNpcAbout;
     handlers_["npc.face"] = &Bridge::CmdNpcFace;
     handlers_["npc.move"] = &Bridge::CmdNpcMove;
