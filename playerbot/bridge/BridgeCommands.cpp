@@ -15,6 +15,8 @@
 #include "playerbot/RandomPlayerbotMgr.h"
 #include "playerbot/playerbot.h"
 #include "playerbot/strategy/Event.h"
+#include "playerbot/TravelMgr.h"
+#include "playerbot/WorldPosition.h"
 
 #include "Entities/Creature.h"
 #include "Entities/NPCHandler.h"
@@ -33,10 +35,13 @@
 #include "Server/WorldPacket.h"
 #include "Server/WorldSession.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <memory>
 #include <sstream>
+#include <set>
+#include <stdexcept>
 
 namespace
 {
@@ -455,6 +460,136 @@ void Bridge::QuestsAt(Player* player, Creature* giver, Json& offered, Json& turn
         lead["objectives"] = quest->GetObjectives();
         turnIn.push_back(lead);
     }
+}
+
+// Places ------------------------------------------------------------------------
+//
+// Named places within a radius of the player, for somebody who lives here to
+// point the way to: the areas the game names (the module's explore
+// destinations, one per area, with the spawn of its nearest to the player),
+// and the people a traveller asks after - innkeepers, flight masters,
+// trainers, vendors, repairers, bankers, auctioneers, stable masters - read
+// from the creature spawn table rather than the live grid, so a wide radius
+// costs one walk over spawn data and no cell visit. Facts only: a name, what
+// it is, where it stands. Which way and how far, in the player's own frame,
+// is the narrator's arithmetic; the words are the model's.
+
+std::optional<Json> Bridge::CmdWorldPlaces(const BridgeInbound&, const Json& args)
+{
+    const std::string name = OptionalString(args, "player");
+    Player* player = nullptr;
+    if (!name.empty())
+        player = RequireOnlinePlayer(name, "player");
+    else
+    {
+        std::vector<Player*> reals = RealPlayersOnline();
+        if (reals.empty())
+            throw BridgeCommandError("no real player is online; pass 'player'");
+        player = reals.front();
+    }
+    const float radius = float(OptionalNumber(args, "radius", 600.0));
+    const size_t limit = size_t(OptionalNumber(args, "limit", 24.0));
+    const WorldPosition here(player);
+
+    std::vector<std::pair<float, Json>> found;
+
+    // The areas: one entry per area the game names, at the point of it
+    // nearest the player. The table is the module's and may not be loaded
+    // (no travel data): then there are no areas to name, not an error.
+    try
+    {
+        for (auto& [areaId, dests] : sTravelMgr.GetExploreLocs())
+        {
+            for (TravelDestination* dest : dests)
+            {
+                const float dist = dest->DistanceTo(here);
+                if (dist > radius)
+                    continue;
+                WorldPosition* point = dest->GetClosestPoint(here);
+                if (!point || point->getMapId() != here.getMapId())
+                    continue;
+                Json place;
+                place["name"] = dest->GetTitle();
+                place["kind"] = "area";
+                place["dist"] = dist;
+                Json pos;
+                pos["x"] = point->getX();
+                pos["y"] = point->getY();
+                pos["z"] = point->getZ();
+                place["pos"] = pos;
+                found.emplace_back(dist, place);
+            }
+        }
+    }
+    catch (const std::out_of_range&)
+    {
+    }
+
+    // The people a traveller asks after, from the spawn table: one line per
+    // creature entry, nearest spawn first, so four guards or two spawns of
+    // one vendor are one name.
+    const uint32 asked = UNIT_NPC_FLAG_INNKEEPER | UNIT_NPC_FLAG_FLIGHTMASTER | UNIT_NPC_FLAG_TRAINER
+                       | UNIT_NPC_FLAG_VENDOR | UNIT_NPC_FLAG_REPAIR | UNIT_NPC_FLAG_BANKER
+                       | UNIT_NPC_FLAG_AUCTIONEER | UNIT_NPC_FLAG_STABLEMASTER;
+    std::vector<CreatureDataPair const*> spawns = here.getCreaturesNear(radius);
+    std::sort(spawns.begin(), spawns.end(), [&here](CreatureDataPair const* a, CreatureDataPair const* b) {
+        const WorldPosition pa(a->second.mapid, a->second.posX, a->second.posY, a->second.posZ);
+        const WorldPosition pb(b->second.mapid, b->second.posX, b->second.posY, b->second.posZ);
+        return here.sqDistance(pa) < here.sqDistance(pb);
+    });
+    std::set<uint32> named;
+    for (CreatureDataPair const* pair : spawns)
+    {
+        const CreatureData& data = pair->second;
+        if (data.mapid != here.getMapId())
+            continue;
+        CreatureInfo const* info = ObjectMgr::GetCreatureTemplate(data.id);
+        if (!info || !info->Name || !(info->NpcFlags & asked))
+            continue;
+        if (!named.insert(data.id).second)
+            continue;
+        const WorldPosition at(data.mapid, data.posX, data.posY, data.posZ);
+        const float dist = here.distance(at);
+        Json place;
+        place["name"] = std::string(info->Name);
+        place["kind"] = "npc";
+        if (info->SubName && *info->SubName)
+            place["sub_name"] = std::string(info->SubName);
+        Json services = Json::array();
+        if (info->NpcFlags & UNIT_NPC_FLAG_INNKEEPER)    services.push_back("innkeeper");
+        if (info->NpcFlags & UNIT_NPC_FLAG_FLIGHTMASTER) services.push_back("flightmaster");
+        if (info->NpcFlags & UNIT_NPC_FLAG_TRAINER)      services.push_back("trainer");
+        if (info->NpcFlags & UNIT_NPC_FLAG_VENDOR)       services.push_back("vendor");
+        if (info->NpcFlags & UNIT_NPC_FLAG_REPAIR)       services.push_back("repair");
+        if (info->NpcFlags & UNIT_NPC_FLAG_BANKER)       services.push_back("banker");
+        if (info->NpcFlags & UNIT_NPC_FLAG_AUCTIONEER)   services.push_back("auctioneer");
+        if (info->NpcFlags & UNIT_NPC_FLAG_STABLEMASTER) services.push_back("stablemaster");
+        place["npc_flags"] = services;
+        place["area"] = at.getAreaName(false, false);
+        place["dist"] = dist;
+        Json pos;
+        pos["x"] = data.posX;
+        pos["y"] = data.posY;
+        pos["z"] = data.posZ;
+        place["pos"] = pos;
+        found.emplace_back(dist, place);
+    }
+
+    std::sort(found.begin(), found.end(), [](const std::pair<float, Json>& a, const std::pair<float, Json>& b) {
+        return a.first < b.first;
+    });
+    Json places = Json::array();
+    for (auto& [dist, place] : found)
+    {
+        if (places.size() >= limit)
+            break;
+        places.push_back(place);
+    }
+    Json result;
+    result["player"] = PlayerRef(player);
+    result["radius"] = radius;
+    result["places"] = places;
+    return result;
 }
 
 // NPCs as characters ------------------------------------------------------------

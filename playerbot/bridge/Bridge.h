@@ -197,6 +197,7 @@ private:
     std::optional<Json> CmdBotStance(const BridgeInbound& in, const Json& args);
     std::optional<Json> CmdBotFace(const BridgeInbound& in, const Json& args);
     std::optional<Json> CmdQuestNearby(const BridgeInbound& in, const Json& args);
+    std::optional<Json> CmdWorldPlaces(const BridgeInbound& in, const Json& args);
     std::optional<Json> CmdNpcAbout(const BridgeInbound& in, const Json& args);
     std::optional<Json> CmdNpcFace(const BridgeInbound& in, const Json& args);
     std::optional<Json> CmdNpcMove(const BridgeInbound& in, const Json& args);
