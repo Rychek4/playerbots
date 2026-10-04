@@ -19,6 +19,7 @@
 #include "playerbot/WorldPosition.h"
 
 #include "Entities/Creature.h"
+#include "Entities/GossipDef.h"
 #include "Entities/NPCHandler.h"
 #include "Entities/Player.h"
 #include "Globals/ObjectAccessor.h"
@@ -37,11 +38,14 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
+#include <map>
 #include <memory>
 #include <sstream>
 #include <set>
 #include <stdexcept>
+#include <vector>
 
 namespace
 {
@@ -470,6 +474,143 @@ void Bridge::QuestsAt(Player* player, Creature* giver, Json& offered, Json& turn
 // civilian, whether it patrols, the gossip it shows when clicked, and the
 // quests it has for this player. One read, no model.
 
+namespace
+{
+    // One option of an npc_text row, in the words the game would show: the
+    // broadcast text it points at when it has one, its own two columns when
+    // not, in the speaker's gender. Rows that point at broadcast_text have
+    // both columns blanked at load (ObjectMgr::LoadGossipText), which is most
+    // of the classic database: reading Text_0 and Text_1 alone, as npc.about
+    // did until 4 October, came back empty for nearly everyone.
+    std::string GossipLine(GossipTextOption const& option, uint8 gender)
+    {
+        if (option.broadcastTextId)
+            if (BroadcastText const* bct = sObjectMgr.GetBroadcastText(option.broadcastTextId))
+                return bct->GetText(-1, gender);
+        const bool female = gender == GENDER_FEMALE;
+        const std::string& own = female ? option.Text_1 : option.Text_0;
+        return own.empty() ? (female ? option.Text_0 : option.Text_1) : own;
+    }
+
+    // The text this creature shows this player when clicked, chosen the way
+    // Player::PrepareGossipMenu chooses it: the per-spawn override
+    // (npc_gossip), then, when the creature has a menu, the menu text with the
+    // highest condition this player meets. Read without starting the menu's
+    // script, which the game's own lookup does as a side effect.
+    uint32 GossipTextFor(Creature* creature, Player* player)
+    {
+        uint32 textId = sObjectMgr.GetNpcGossip(creature->GetGUIDLow());
+        const uint32 menuId = creature->GetDefaultGossipMenuId();
+        if (!menuId)
+            return textId ? textId : DEFAULT_GOSSIP_MESSAGE;
+        textId = DEFAULT_GOSSIP_MESSAGE;
+        uint32 last = 0;
+        GossipMenusMapBounds bounds = sObjectMgr.GetGossipMenusMapBounds(menuId);
+        for (auto it = bounds.first; it != bounds.second; ++it)
+        {
+            GossipMenus const& menu = it->second;
+            if ((!menu.conditionId && !last) ||
+                (menu.conditionId > last && player &&
+                 sObjectMgr.IsConditionSatisfied(menu.conditionId, player, player->GetMap(), creature, CONDITION_FROM_GOSSIP_MENU)))
+            {
+                last = menu.conditionId;
+                textId = menu.text_id;
+            }
+        }
+        return textId;
+    }
+
+    // Its own words to a visitor, up to `most`: the gossip text's options,
+    // then what it says over a list of quests (questgiver_greeting) and over
+    // its training (trainer_greeting). The game's generic "Greetings, $N" is
+    // nobody's own words and is left out. Placeholders ($N, $C, $B...) stay
+    // in, for the reader to fill.
+    Json WordsOf(Creature* creature, Player* player, size_t most)
+    {
+        Json words = Json::array();
+        auto add = [&](const std::string& line)
+        {
+            if (line.empty() || words.size() >= most)
+                return;
+            for (const Json& w : words)
+                if (w.get<std::string>() == line)
+                    return;
+            words.push_back(line);
+        };
+        const uint32 textId = GossipTextFor(creature, player);
+        if (textId && textId != DEFAULT_GOSSIP_MESSAGE)
+            if (GossipText const* text = sObjectMgr.GetGossipText(textId))
+                for (GossipTextOption const& option : text->Options)
+                    add(GossipLine(option, creature->getGender()));
+        if (QuestgiverGreeting const* greeting = sObjectMgr.GetQuestgiverGreetingData(creature->GetEntry(), QUESTGIVER_CREATURE))
+            add(greeting->text);
+        if (TrainerGreeting const* greeting = sObjectMgr.GetTrainerGreetingData(creature->GetEntry()))
+            add(greeting->text);
+        return words;
+    }
+
+    // The quests between this one and the player: every quest it gives or
+    // takes that the player can take now, holds, or has done, with where it
+    // sits in its chain. What a resident remembers of the party is what the
+    // party did for them, in the game's own record, and two residents whose
+    // quests meet (one gives what the other takes, or the next in a chain)
+    // are a scene the world already wrote. Done quests carry what this one
+    // said when the party turned it in (OfferRewardText). The party's own
+    // standing comes first: complete, then held, then done, then on offer.
+    Json ThreadsWith(Player* player, Creature* creature, size_t most)
+    {
+        std::map<uint32, std::pair<bool, bool>> roles;     // quest -> (gives, takes)
+        QuestRelationsMapBounds gives = sObjectMgr.GetCreatureQuestRelationsMapBounds(creature->GetEntry());
+        for (auto it = gives.first; it != gives.second; ++it)
+            roles[it->second].first = true;
+        QuestRelationsMapBounds takes = sObjectMgr.GetCreatureQuestInvolvedRelationsMapBounds(creature->GetEntry());
+        for (auto it = takes.first; it != takes.second; ++it)
+            roles[it->second].second = true;
+
+        static const char* kOrder[] = {"complete", "taken", "rewarded", "available"};
+        std::vector<Json> found[4];
+        for (auto const& entry : roles)
+        {
+            Quest const* quest = sObjectMgr.GetQuestTemplate(entry.first);
+            if (!quest)
+                continue;
+            int rank = -1;
+            if (player->GetQuestRewardStatus(entry.first))
+                rank = 2;
+            else
+                switch (player->GetQuestStatus(entry.first))
+                {
+                    case QUEST_STATUS_COMPLETE: rank = 0; break;
+                    case QUEST_STATUS_INCOMPLETE:
+                    case QUEST_STATUS_FAILED: rank = 1; break;
+                    default:
+                        if (entry.second.first && player->CanTakeQuest(quest, false) && player->CanAddQuest(quest, false))
+                            rank = 3;
+                        break;
+                }
+            if (rank < 0)
+                continue;
+            Json thread;
+            thread["quest_id"] = quest->GetQuestId();
+            thread["title"] = quest->GetTitle();
+            thread["gives"] = entry.second.first;
+            thread["takes"] = entry.second.second;
+            thread["status"] = kOrder[rank];
+            thread["prev"] = uint32(std::abs(quest->GetPrevQuestId()));
+            thread["next"] = quest->GetNextQuestInChain();
+            if (rank == 2 && entry.second.second)
+                thread["reward_text"] = quest->GetOfferRewardText();
+            found[rank].push_back(thread);
+        }
+        Json threads = Json::array();
+        for (const auto& group : found)
+            for (const Json& thread : group)
+                if (threads.size() < most)
+                    threads.push_back(thread);
+        return threads;
+    }
+}
+
 std::optional<Json> Bridge::CmdNpcAbout(const BridgeInbound&, const Json& args)
 {
     Creature* creature = FindCreature(args);
@@ -526,26 +667,9 @@ std::optional<Json> Bridge::CmdNpcAbout(const BridgeInbound&, const Json& args)
     else
         result["dist"] = nullptr;
 
-    // Its own words: the texts behind its gossip menu, first option of each,
-    // up to three. They carry the client's placeholders ($N, $C, $B...), which
-    // the reader replaces.
-    Json gossip = Json::array();
-    if (const uint32 menuId = creature->GetDefaultGossipMenuId())
-    {
-        GossipMenusMapBounds bounds = sObjectMgr.GetGossipMenusMapBounds(menuId);
-        for (auto it = bounds.first; it != bounds.second && gossip.size() < 3; ++it)
-        {
-            GossipText const* text = sObjectMgr.GetGossipText(it->second.text_id);
-            if (!text)
-                continue;
-            for (int i = 0; i < MAX_GOSSIP_TEXT_OPTIONS && gossip.size() < 3; ++i)
-            {
-                const std::string& line = text->Options[i].Text_0.empty() ? text->Options[i].Text_1 : text->Options[i].Text_0;
-                if (!line.empty())
-                    gossip.push_back(line);
-            }
-        }
-    }
+    // Its own words: what it says when clicked, as the game would choose it
+    // for this player, and its greetings over quests and training.
+    Json gossip = WordsOf(creature, player, 3);
     result["gossip"] = gossip;
 
     Json offered = Json::array();
@@ -555,6 +679,8 @@ std::optional<Json> Bridge::CmdNpcAbout(const BridgeInbound&, const Json& args)
     Json quests;
     quests["offered"] = offered;
     quests["turn_in"] = turnIn;
+    quests["threads"] = player && (creature->GetUInt32Value(UNIT_NPC_FLAGS) & UNIT_NPC_FLAG_QUESTGIVER)
+        ? ThreadsWith(player, creature, 12) : Json::array();
     result["quests"] = quests;
     return result;
 }
