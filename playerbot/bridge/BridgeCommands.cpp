@@ -19,7 +19,9 @@
 #include "playerbot/WorldPosition.h"
 
 #include "Entities/Creature.h"
+#include "Entities/GameObject.h"
 #include "Entities/GossipDef.h"
+#include "Entities/ItemPrototype.h"
 #include "Entities/NPCHandler.h"
 #include "Entities/Player.h"
 #include "Globals/ObjectAccessor.h"
@@ -549,6 +551,53 @@ namespace
         return words;
     }
 
+    // What a quest the player holds asks for, and how far along it is: one
+    // entry per objective, the thing by name, how many the player has and
+    // how many it wants. The narrator raises a quest in hand when the party
+    // comes back with it not done, and in the 13:49 session on 5 October
+    // nobody knew what the quest was: Ansel said the heirloom was found, and
+    // Verna Furlbrow asked whether the party still had Old Blanchy, who is a
+    // horse waiting for oats.
+    Json ProgressOf(Player* player, Quest const* quest)
+    {
+        Json progress = Json::array();
+        QuestStatusMap const& held = player->getQuestStatusMap();
+        auto status = held.find(quest->GetQuestId());
+        if (status == held.end())
+            return progress;
+        QuestStatusData const& data = status->second;
+        for (int i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
+        {
+            if (!quest->ReqItemId[i] || !quest->ReqItemCount[i])
+                continue;
+            ItemPrototype const* proto = ObjectMgr::GetItemPrototype(quest->ReqItemId[i]);
+            Json part;
+            part["what"] = proto ? std::string(proto->Name1) : std::string();
+            part["have"] = std::min(data.m_itemcount[i], quest->ReqItemCount[i]);
+            part["need"] = quest->ReqItemCount[i];
+            progress.push_back(part);
+        }
+        for (int i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
+        {
+            const int32 id = quest->ReqCreatureOrGOId[i];
+            if (!id || !quest->ReqCreatureOrGOCount[i])
+                continue;
+            std::string what = quest->ObjectiveText[i];
+            if (what.empty() && id > 0)
+                if (CreatureInfo const* info = ObjectMgr::GetCreatureTemplate(uint32(id)))
+                    what = info->Name ? info->Name : "";
+            if (what.empty() && id < 0)
+                if (GameObjectInfo const* info = ObjectMgr::GetGameObjectInfo(uint32(-id)))
+                    what = info->name ? info->name : "";
+            Json part;
+            part["what"] = what;
+            part["have"] = std::min(data.m_creatureOrGOcount[i], quest->ReqCreatureOrGOCount[i]);
+            part["need"] = quest->ReqCreatureOrGOCount[i];
+            progress.push_back(part);
+        }
+        return progress;
+    }
+
     // The quests between this one and the player: every quest it gives or
     // takes that the player can take now, holds, or has done, with where it
     // sits in its chain. What a resident remembers of the party is what the
@@ -600,6 +649,12 @@ namespace
             thread["next"] = quest->GetNextQuestInChain();
             if (rank == 2 && entry.second.second)
                 thread["reward_text"] = quest->GetOfferRewardText();
+            if (rank <= 1)
+            {
+                // Held, done or not: what it asks for, and how far along.
+                thread["objectives"] = quest->GetObjectives();
+                thread["progress"] = ProgressOf(player, quest);
+            }
             found[rank].push_back(thread);
         }
         Json threads = Json::array();
