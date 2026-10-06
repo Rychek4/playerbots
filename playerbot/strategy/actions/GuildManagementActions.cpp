@@ -205,7 +205,9 @@ bool GuildManageNearbyAction::Execute(Event& event)
             }
 
             for (auto line : lines)
-                if (sameGroup)
+                if (ai->Hushed())   // quiet bots (PlayerbotAI::Hushed)
+                    ;
+                else if (sameGroup)
                 {
                     WorldPacket data;
                     ChatHandler::BuildChatPacket(data, bot->GetGroup()->IsRaidGroup() ? CHAT_MSG_RAID : CHAT_MSG_PARTY, line.c_str(), LANG_UNIVERSAL, CHAT_TAG_NONE, bot->GetObjectGuid(), bot->GetName());

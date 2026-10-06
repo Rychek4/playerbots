@@ -100,6 +100,8 @@ void EmoteActionBase::InitEmotes()
 
 bool EmoteActionBase::Emote(Unit* target, uint32 type, bool textEmote)
 {
+    if (ai->Hushed())          // quiet bots: the narrator speaks for bots (PlayerbotAI::Hushed)
+        return false;
     if (target && !sServerFacade.IsInFront(bot, target, sPlayerbotAIConfig.sightDistance, M_PI_F))
         sServerFacade.SetFacingTo(bot, target);
 
@@ -149,6 +151,8 @@ Unit* EmoteActionBase::GetTarget()
 
 bool EmoteActionBase::ReceiveEmote(Player* requester, Player* source, uint32 emote, bool verbal)
 {
+    if (ai->Hushed())          // quiet bots: the narrator speaks for bots (PlayerbotAI::Hushed)
+        return false;
     uint32 emoteId = 0;
     uint32 textEmote = 0;
     std::string emoteText;
@@ -652,6 +656,8 @@ bool EmoteActionBase::ReceiveEmote(Player* requester, Player* source, uint32 emo
 
 bool EmoteAction::Execute(Event& event)
 {
+    if (ai->Hushed())          // quiet bots: the narrator speaks for bots (PlayerbotAI::Hushed)
+        return false;
     Player* requester = event.getOwner() ? event.getOwner() : GetMaster();
     WorldPacket p(event.getPacket());
     uint32 emote = 0;
@@ -834,6 +840,8 @@ bool EmoteAction::isUseful()
 
 bool TalkAction::Execute(Event& event)
 {
+    if (ai->Hushed())          // quiet bots: the narrator speaks for bots (PlayerbotAI::Hushed)
+        return false;
     Unit* target = ai->GetUnit(AI_VALUE(ObjectGuid, "talk target"));
     if (!target)
         target = GetTarget();

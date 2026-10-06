@@ -92,6 +92,7 @@ bool RevealGatheringItemAction::Execute(Event& event)
 
     // everything is fine, do it
     ai->Ping(go->GetPositionX(), go->GetPositionY());
-    bot->Say(msg.str(), LANG_UNIVERSAL);
+    if (!ai->Hushed())          // quiet bots (PlayerbotAI::Hushed)
+        bot->Say(msg.str(), LANG_UNIVERSAL);
     return true;
 }

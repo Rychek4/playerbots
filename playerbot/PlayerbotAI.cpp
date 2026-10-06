@@ -2470,8 +2470,39 @@ bool PlayerbotAI::PlaySound(uint32 emote)
     return false;
 }
 
+// Quiet bots ----------------------------------------------------------------
+//
+// With the narrator bridge on, the narrator speaks for bots: every line a
+// bot says in a moment is the narrator's, and the module's own chatter -
+// greeting every new face with a wave, emoting back at whoever emoted at it
+// (two bots in a party wave at each other for as long as they stand
+// together), random talk, broadcasts of loot and quests, replies to chat,
+// its own AI chat, the roleplay and travel lines - talked over it. The
+// owner tried the config switches one by one and the chatter went on: a
+// bot's strategies are saved with it and reloaded, so a changed
+// NonCombatStrategies never reaches a bot the module already knew, and the
+// greeting has more than one switch. So this is one switch, checked where
+// the module speaks: PlayerbotAI's Say family and PlayEmote, and the few
+// actions that call the game's chat directly.
+//
+// A line said on purpose is said inside a Voice: the bridge's bot.say, and
+// a bot answering its master's command (TellPlayer, which "silent" already
+// governs). The thread's count is enough, since the line is said on the
+// stack that opened the Voice.
+namespace { thread_local int s_voice = 0; }
+
+PlayerbotAI::Voice::Voice() { ++s_voice; }
+PlayerbotAI::Voice::~Voice() { --s_voice; }
+
+bool PlayerbotAI::Hushed()
+{
+    return sPlayerbotAIConfig.bridgeQuietBots && s_voice == 0 && !IsRealPlayer();
+}
+
 bool PlayerbotAI::PlayEmote(uint32 emote)
 {
+    if (Hushed())
+        return false;
     WorldPacket data(SMSG_TEXT_EMOTE);
     data << (TextEmotes)emote;
     data << urand(0, EmoteAction::GetNumberOfEmoteVariants((TextEmotes)emote, bot->getRace(), bot->getGender()) - 1);
@@ -3052,6 +3083,8 @@ ChatChannelSource PlayerbotAI::GetChatChannelSource(Player* bot, uint32 type, st
 
 bool PlayerbotAI::SayToGuild(std::string msg, bool likePlayer)
 {
+    if (Hushed())
+        return false;
     if (msg.empty())
     {
         return false;
@@ -3100,6 +3133,8 @@ bool PlayerbotAI::SayToGuild(std::string msg, bool likePlayer)
 
 bool PlayerbotAI::SayToWorld(std::string msg)
 {
+    if (Hushed())
+        return false;
     if (msg.empty())
     {
         return false;
@@ -3123,6 +3158,8 @@ bool PlayerbotAI::SayToWorld(std::string msg)
 
 bool PlayerbotAI::SayToGeneral(std::string msg)
 {
+    if (Hushed())
+        return false;
     if (msg.empty())
     {
         return false;
@@ -3156,6 +3193,8 @@ bool PlayerbotAI::SayToGeneral(std::string msg)
 
 bool PlayerbotAI::SayToTrade(std::string msg)
 {
+    if (Hushed())
+        return false;
     if (msg.empty())
     {
         return false;
@@ -3197,6 +3236,8 @@ bool PlayerbotAI::SayToTrade(std::string msg)
 
 bool PlayerbotAI::SayToLFG(std::string msg)
 {
+    if (Hushed())
+        return false;
     if (msg.empty())
     {
         return false;
@@ -3229,6 +3270,8 @@ bool PlayerbotAI::SayToLFG(std::string msg)
 
 bool PlayerbotAI::SayToLocalDefense(std::string msg)
 {
+    if (Hushed())
+        return false;
     if (msg.empty())
     {
         return false;
@@ -3262,6 +3305,8 @@ bool PlayerbotAI::SayToLocalDefense(std::string msg)
 
 bool PlayerbotAI::SayToWorldDefense(std::string msg)
 {
+    if (Hushed())
+        return false;
 #ifdef MANGOSBOT_ZERO
     //check if 11 honor rank
     if (bot->GetHonorRankInfo().rank < 11)
@@ -3294,6 +3339,8 @@ bool PlayerbotAI::SayToWorldDefense(std::string msg)
 
 bool PlayerbotAI::SayToGuildRecruitment(std::string msg)
 {
+    if (Hushed())
+        return false;
     //check for bot's level? level 60?
     if (msg.empty())
     {
@@ -3337,6 +3384,8 @@ bool PlayerbotAI::SayToGuildRecruitment(std::string msg)
 
 bool PlayerbotAI::SayToParty(std::string msg, bool likePlayer)
 {
+    if (Hushed())
+        return false;
     if (!bot->GetGroup())
     {
         return false;
@@ -3378,6 +3427,8 @@ bool PlayerbotAI::SayToParty(std::string msg, bool likePlayer)
 
 bool PlayerbotAI::SayToRaid(std::string msg)
 {
+    if (Hushed())
+        return false;
     if (!bot->GetGroup() || !bot->GetGroup()->IsRaidGroup())
     {
         return false;
@@ -3396,6 +3447,8 @@ bool PlayerbotAI::SayToRaid(std::string msg)
 
 bool PlayerbotAI::Yell(std::string msg, bool likePlayer)
 {
+    if (Hushed())
+        return false;
     uint32 lang = LANG_UNIVERSAL;
     if (bot->GetTeam() == ALLIANCE)
     {
@@ -3431,6 +3484,8 @@ bool PlayerbotAI::Yell(std::string msg, bool likePlayer)
 
 bool PlayerbotAI::Say(std::string msg, bool likePlayer)
 {
+    if (Hushed())
+        return false;
     uint32 lang = LANG_UNIVERSAL;
     if (bot->GetTeam() == ALLIANCE)
     {
@@ -3467,6 +3522,8 @@ bool PlayerbotAI::Say(std::string msg, bool likePlayer)
 
 bool PlayerbotAI::Whisper(std::string msg, std::string receiverName, bool likePlayer)
 {
+    if (Hushed())
+        return false;
     ObjectGuid receiver = sObjectMgr.GetPlayerGuidByName(receiverName);
     Player* rPlayer = sObjectMgr.GetPlayer(receiver);
 
@@ -3498,6 +3555,7 @@ bool PlayerbotAI::Whisper(std::string msg, std::string receiverName, bool likePl
 
 bool PlayerbotAI::TellPlayerNoFacing(Player* player, std::string text, PlayerbotSecurityLevel securityLevel, bool isPrivate, bool noRepeat, bool ignoreSilent)
 {
+    Voice voice;     // answering the player: governed by "silent", not by Hushed
     if(!player)
         return false;
 
@@ -3626,6 +3684,7 @@ bool PlayerbotAI::TellPlayerNoFacing(Player* player, std::string text, Playerbot
 
 bool PlayerbotAI::TellError(Player* player, std::string text, PlayerbotSecurityLevel securityLevel, bool ignoreSilent)
 {
+    Voice voice;     // answering the player: governed by "silent", not by Hushed
     if (!IsTellAllowed(player, securityLevel) || !IsSafe(player) || player->GetPlayerbotAI())
         return false;
 
@@ -3656,6 +3715,7 @@ bool PlayerbotAI::IsTellAllowed(Player* player, PlayerbotSecurityLevel securityL
 
 bool PlayerbotAI::TellPlayer(Player* player, std::string text, PlayerbotSecurityLevel securityLevel, bool isPrivate, bool ignoreSilent)
 {
+    Voice voice;     // answering the player: governed by "silent", not by Hushed
     if (!TellPlayerNoFacing(player, text, securityLevel, isPrivate, ignoreSilent))
         return false;
 
