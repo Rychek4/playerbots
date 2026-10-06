@@ -803,6 +803,27 @@ namespace
         const MovementGeneratorType own = creature->GetDefaultMovementType();
         return own == WAYPOINT_MOTION_TYPE || own == PATH_MOTION_TYPE;
     }
+
+    // A walk we put on top of somebody's route, taken off before the next
+    // one goes on, so a re-aim replaces it rather than stacking on it. The
+    // narrator re-aims a walker at the party every scene (`npc.move to`
+    // again), and a point walk is not removed when one above it ends
+    // (PointMovementGenerator is not IsRemovedOnExpire): stacked, the
+    // newest walk ended beside the party and the one under it resumed,
+    // walking them back to where the party had been two seconds before,
+    // and the one under that. In the owner's session after route-walkers
+    // were let walk (6 October), walkers went way past the party. A
+    // wanderer's walk never stacked: `to` clears their movement first.
+    void TakeOurWalkOff(MotionMaster* motion)
+    {
+        for (int i = 0; i < 8; ++i)
+        {
+            const MovementGeneratorType top = motion->GetCurrentMovementGeneratorType();
+            if (top != POINT_MOTION_TYPE && top != FOLLOW_MOTION_TYPE)
+                return;
+            motion->MovementExpired(false);
+        }
+    }
 }
 
 std::optional<Json> Bridge::CmdNpcFace(const BridgeInbound&, const Json& args)
@@ -1111,9 +1132,7 @@ std::optional<Json> Bridge::CmdNpcMove(const BridgeInbound&, const Json& args)
             // our walk taken off the top, and the pause lifted. The route
             // carries on to its next point, as it does after a player has
             // clicked them; restarting it would walk them back to its start.
-            const MovementGeneratorType now = motion->GetCurrentMovementGeneratorType();
-            if (now == POINT_MOTION_TYPE || now == FOLLOW_MOTION_TYPE)
-                motion->MovementExpired(false);
+            TakeOurWalkOff(motion);
             motion->UnpauseWaypoints();
             result["route"] = true;
             return result;
@@ -1163,9 +1182,11 @@ std::optional<Json> Bridge::CmdNpcMove(const BridgeInbound&, const Json& args)
         if (route)
         {
             // On top of the paused route, so `home` takes it off and the
-            // route carries on from wherever the walk left them.
+            // route carries on from wherever the walk left them. Our own
+            // earlier walk comes off first (`TakeOurWalkOff`).
             if (now == own)
                 motion->PauseWaypoints(hold);
+            TakeOurWalkOff(motion);
             motion->MoveFollow(target, distance, angle, false);
             result["route"] = true;
             return result;
@@ -1194,6 +1215,7 @@ std::optional<Json> Bridge::CmdNpcMove(const BridgeInbound&, const Json& args)
         // lifts the pause and the route carries on from there.
         if (now == own)
             motion->PauseWaypoints(hold);
+        TakeOurWalkOff(motion);
         motion->MovePoint(0, ::Position(x, y, z, o), FORCED_MOVEMENT_WALK);
         result["route"] = true;
     }
