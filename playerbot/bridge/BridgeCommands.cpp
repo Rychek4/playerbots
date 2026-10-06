@@ -465,10 +465,10 @@ void Bridge::QuestsAt(Player* player, Creature* giver, Json& offered, Json& turn
         lead["details"] = quest->GetDetails();
         lead["objectives"] = quest->GetObjectives();
         // What the taker says when the party comes back with it, and what
-        // they say once it is handed over. With only `details` - the pitch
-        // the quest was offered with - Salma Saldean met a party bringing
-        // her stew by introducing herself and pitching it again (the 21:16
-        // session on 5 October).
+        // they say once it is handed over. `details` is the giver's pitch,
+        // and the giver is often somebody else: with only that, Salma
+        // Saldean met the party bringing Verna Furlbrow's recipe with
+        // Verna's words (the 21:16 session on 5 October).
         lead["request_text"] = quest->GetRequestItemsText();
         lead["reward_text"] = quest->GetOfferRewardText();
         turnIn.push_back(lead);
