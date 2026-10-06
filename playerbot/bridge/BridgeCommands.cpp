@@ -464,6 +464,13 @@ void Bridge::QuestsAt(Player* player, Creature* giver, Json& offered, Json& turn
         lead["dist"] = dist;
         lead["details"] = quest->GetDetails();
         lead["objectives"] = quest->GetObjectives();
+        // What the taker says when the party comes back with it, and what
+        // they say once it is handed over. With only `details` - the pitch
+        // the quest was offered with - Salma Saldean met a party bringing
+        // her stew by introducing herself and pitching it again (the 21:16
+        // session on 5 October).
+        lead["request_text"] = quest->GetRequestItemsText();
+        lead["reward_text"] = quest->GetOfferRewardText();
         turnIn.push_back(lead);
     }
 }
@@ -598,6 +605,40 @@ namespace
         return progress;
     }
 
+    // What a vendor sells: the names of the goods on its list, as the game
+    // has them, its own list first and then its template's, each name once,
+    // up to `most`. "Mike Miller has goods to sell" was all the narrator had
+    // in the 21:16 session on 5 October, and a bread merchant offered oil
+    // and spare buckles to a party fresh from a fight. His list says bread.
+    Json WaresOf(Creature* creature, size_t most)
+    {
+        Json wares = Json::array();
+        std::vector<VendorItemData const*> lists;
+        lists.push_back(creature->GetVendorItems());
+#ifndef MANGOSBOT_ZERO
+        lists.push_back(creature->GetVendorTemplateItems());
+#endif
+        std::set<std::string> seen;
+        for (VendorItemData const* list : lists)
+        {
+            if (!list)
+                continue;
+            for (VendorItem const* sold : list->m_items)
+            {
+                if (wares.size() >= most)
+                    return wares;
+                ItemPrototype const* proto = sold ? ObjectMgr::GetItemPrototype(sold->item) : nullptr;
+                if (!proto || !proto->Name1)
+                    continue;
+                const std::string name(proto->Name1);
+                if (name.empty() || !seen.insert(name).second)
+                    continue;
+                wares.push_back(name);
+            }
+        }
+        return wares;
+    }
+
     // The quests between this one and the player: every quest it gives or
     // takes that the player can take now, holds, or has done, with where it
     // sits in its chain. What a resident remembers of the party is what the
@@ -726,6 +767,8 @@ std::optional<Json> Bridge::CmdNpcAbout(const BridgeInbound&, const Json& args)
     // for this player, and its greetings over quests and training.
     Json gossip = WordsOf(creature, player, 3);
     result["gossip"] = gossip;
+    if (creature->GetUInt32Value(UNIT_NPC_FLAGS) & UNIT_NPC_FLAG_VENDOR)
+        result["wares"] = WaresOf(creature, 8);
 
     Json offered = Json::array();
     Json turnIn = Json::array();
