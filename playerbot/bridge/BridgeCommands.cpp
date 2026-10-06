@@ -787,16 +787,45 @@ std::optional<Json> Bridge::CmdNpcAbout(const BridgeInbound&, const Json& args)
     return result;
 }
 
+namespace
+{
+    // Somebody's own movement: standing about, wandering, or walking a set
+    // route (a waypoint path or a fixed one). Escorts and scripted walkers
+    // have a different movement on top of their own and are not this.
+    bool OwnMovement(MovementGeneratorType type)
+    {
+        return type == IDLE_MOTION_TYPE || type == RANDOM_MOTION_TYPE
+            || type == WAYPOINT_MOTION_TYPE || type == PATH_MOTION_TYPE;
+    }
+
+    bool OnARoute(const Creature* creature)
+    {
+        const MovementGeneratorType own = creature->GetDefaultMovementType();
+        return own == WAYPOINT_MOTION_TYPE || own == PATH_MOTION_TYPE;
+    }
+}
+
 std::optional<Json> Bridge::CmdNpcFace(const BridgeInbound&, const Json& args)
 {
     // Turn to face a player, so the one who speaks is seen to; or, with no
     // target, back to the way it stood when it spawned.
+    //
+    // `hold` (seconds) also stops them where they are for that long: the
+    // game's own pause when a player clicks a walking NPC (the gossip and
+    // quest handlers call PauseWaypoints with InteractionPauseTimer), which
+    // covers a set route, a fixed path and a wanderer alike. Facing alone
+    // does not stop a walker; its movement turns it straight back onto its
+    // way (Kira Songshine, 6 October). No target lets them go again.
     Creature* creature = FindCreature(args);
     const std::string targetName = OptionalString(args, "target");
+    MotionMaster* motion = creature->GetMotionMaster();
+    const bool own = OwnMovement(motion->GetCurrentMovementGeneratorType());
     Json result;
     result["unit"] = UnitRef(creature);
     if (targetName.empty())
     {
+        if (own)
+            motion->UnpauseWaypoints();
         float x = 0.0f, y = 0.0f, z = 0.0f, o = 0.0f;
         creature->GetRespawnCoord(x, y, z, &o);
         creature->SetFacingTo(o);
@@ -806,6 +835,16 @@ std::optional<Json> Bridge::CmdNpcFace(const BridgeInbound&, const Json& args)
     Player* target = RequireOnlinePlayer(targetName, "target");
     if (target->GetMapId() != creature->GetMapId())
         throw BridgeCommandError("'" + std::string(target->GetName()) + "' is on another map");
+    if (args.contains("hold") && !args["hold"].is_null() && !args["hold"].is_number())
+        throw BridgeCommandError("argument 'hold' must be a number");
+    const double hold = args.contains("hold") && args["hold"].is_number() ? args["hold"].get<double>() : 0.0;
+    // Only their own movement is paused: somebody already walked over
+    // (npc.move) is held by that walk, and pausing it would stop them short.
+    if (hold > 0.0 && own && creature->IsAlive() && !creature->IsInCombat())
+    {
+        motion->PauseWaypoints(uint32(hold * 1000.0));
+        result["held"] = hold;
+    }
     creature->SetFacingToObject(target);
     result["facing"] = "target";
     result["target"] = PlayerRef(target);
@@ -1066,10 +1105,23 @@ std::optional<Json> Bridge::CmdNpcMove(const BridgeInbound&, const Json& args)
 
     if (mode == "home")
     {
-        // Their own movement back first (standing, wandering, a patrol),
-        // then the walk to where it starts; the core pops back to that
-        // movement on arrival. One more than 150 yards out is despawned and
-        // respawned at home by the core itself.
+        if (OnARoute(creature))
+        {
+            // Somebody on a set route goes back to it from where they stand:
+            // our walk taken off the top, and the pause lifted. The route
+            // carries on to its next point, as it does after a player has
+            // clicked them; restarting it would walk them back to its start.
+            const MovementGeneratorType now = motion->GetCurrentMovementGeneratorType();
+            if (now == POINT_MOTION_TYPE || now == FOLLOW_MOTION_TYPE)
+                motion->MovementExpired(false);
+            motion->UnpauseWaypoints();
+            result["route"] = true;
+            return result;
+        }
+        // Their own movement back first (standing, wandering), then the walk
+        // to where it starts; the core pops back to that movement on
+        // arrival. One more than 150 yards out is despawned and respawned at
+        // home by the core itself.
         motion->Initialize();
         motion->MoveTargetedHome(false);
         return result;
@@ -1080,15 +1132,19 @@ std::optional<Json> Bridge::CmdNpcMove(const BridgeInbound&, const Json& args)
         throw BridgeCommandError("the creature is dead");
     if (creature->IsInCombat())
         throw BridgeCommandError("the creature is in a fight");
-    // Only somebody who stands about or wanders. A patrol or an escort walks
-    // a path its own script owns, and moving it would fight that script.
+    // Somebody who stands about, wanders, or walks a set route of their own.
+    // An escort or a scripted walker has something else's movement on top
+    // of theirs (an escort's default is to stand), and moving it would fight
+    // that script: refused. Set routes were refused too until 6 October;
+    // the owner: route-walkers need to be included.
     const MovementGeneratorType own = creature->GetDefaultMovementType();
-    if (own != IDLE_MOTION_TYPE && own != RANDOM_MOTION_TYPE)
-        throw BridgeCommandError("the creature keeps its own path (a patrol or an escort)");
+    if (!OwnMovement(own))
+        throw BridgeCommandError("the creature keeps its own path (an escort or a script)");
     const MovementGeneratorType now = motion->GetCurrentMovementGeneratorType();
-    if (now != IDLE_MOTION_TYPE && now != RANDOM_MOTION_TYPE && now != POINT_MOTION_TYPE
+    if (now != own && now != IDLE_MOTION_TYPE && now != RANDOM_MOTION_TYPE && now != POINT_MOTION_TYPE
             && now != FOLLOW_MOTION_TYPE && now != HOME_MOTION_TYPE)
         throw BridgeCommandError("the creature is being moved by something else");
+    const bool route = OnARoute(creature);
 
     Player* target = RequireOnlinePlayer(RequireString(args, "target"), "target");
     if (target->GetMapId() != creature->GetMapId())
@@ -1097,11 +1153,25 @@ std::optional<Json> Bridge::CmdNpcMove(const BridgeInbound&, const Json& args)
     creature->SetStandState(UNIT_STAND_STATE_STAND);
     result["target"] = PlayerRef(target);
 
+    // How long a route stays paused under our walk: the game's own pause
+    // for a clicked NPC by default. `home` lifts it sooner.
+    const uint32 hold = uint32(OptionalNumber(args, "hold", 180.0) * 1000.0);
+
     if (mode == "follow")
     {
+        const float angle = float(OptionalNumber(args, "angle", 90.0)) * M_PI_F / 180.0f;   // 90 = at the player's side
+        if (route)
+        {
+            // On top of the paused route, so `home` takes it off and the
+            // route carries on from wherever the walk left them.
+            if (now == own)
+                motion->PauseWaypoints(hold);
+            motion->MoveFollow(target, distance, angle, false);
+            result["route"] = true;
+            return result;
+        }
         // As the main movement, so nothing of its own pulls it away while it
         // walks with the party; `home` gives its own movement back.
-        const float angle = float(OptionalNumber(args, "angle", 90.0)) * M_PI_F / 180.0f;   // 90 = at the player's side
         motion->MoveFollow(target, distance, angle, true);
         return result;
     }
@@ -1116,11 +1186,25 @@ std::optional<Json> Bridge::CmdNpcMove(const BridgeInbound&, const Json& args)
     if (z <= INVALID_HEIGHT || std::abs(z - target->GetPositionZ()) > 15.0f)
         z = target->GetPositionZ();
     const float o = MapManager::NormalizeOrientation(std::atan2(target->GetPositionY() - y, target->GetPositionX() - x));
-    // Their own movement is set aside under an idle one, so a wanderer stays
-    // where it walked to instead of wandering straight back; `home` restores it.
-    motion->Clear(false, true);
-    motion->MoveIdle();
-    motion->MovePoint(0, ::Position(x, y, z, o), FORCED_MOVEMENT_WALK);   // the game's Position; Bridge::Position is ours
+    if (route)
+    {
+        // Somebody on a set route: the route paused, as the game pauses it
+        // for a player who clicks them, and the walk put on top of it. When
+        // the walk ends the paused route is underneath and they stand; `home`
+        // lifts the pause and the route carries on from there.
+        if (now == own)
+            motion->PauseWaypoints(hold);
+        motion->MovePoint(0, ::Position(x, y, z, o), FORCED_MOVEMENT_WALK);
+        result["route"] = true;
+    }
+    else
+    {
+        // Their own movement is set aside under an idle one, so a wanderer stays
+        // where it walked to instead of wandering straight back; `home` restores it.
+        motion->Clear(false, true);
+        motion->MoveIdle();
+        motion->MovePoint(0, ::Position(x, y, z, o), FORCED_MOVEMENT_WALK);   // the game's Position; Bridge::Position is ours
+    }
     Json pos;
     pos["x"] = x;
     pos["y"] = y;
