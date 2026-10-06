@@ -992,6 +992,12 @@ AiPlayerbot.UseKnockback = 1
 # on them are never re-rolled, teleported or timed out by the random-bot manager, and it never
 # logs them in by itself. Must differ from AiPlayerbot.RandomBotAccountPrefix.
 #AiPlayerbot.Bridge.CastAccountPrefix = castbot
+# The narrator speaks for bots: with the bridge on, a bot never talks, emotes, greets,
+# broadcasts or replies to chat on its own; only lines the control center sends (bot.say)
+# and answers to its master's commands (still governed by the "silent" strategy). One
+# switch, because a bot's saved strategies outlive the per-feature switches. 0 - the
+# module's own chatter as usual. Ignored when the bridge is off.
+#AiPlayerbot.Bridge.QuietBots = 1
 
 AiPlayerbot.PerfMonEnabled = 0
 

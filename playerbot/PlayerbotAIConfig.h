@@ -409,6 +409,9 @@ public:
     float bridgeSceneRadius;
     int bridgeMaxClients;
     std::string bridgeCastAccountPrefix;
+    // The narrator speaks for bots: on (with the bridge on), a bot never
+    // talks, emotes or greets on its own (PlayerbotAI::Hushed).
+    bool bridgeQuietBots;
 
     bool perfMonEnabled;
     bool bExplicitDbStoreSave = false;

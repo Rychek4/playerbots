@@ -284,6 +284,8 @@ bool PlayerbotAIConfig::Initialize()
     bridgeSceneRadius = config.GetFloatDefault("AiPlayerbot.Bridge.SceneRadius", 40.0f);
     bridgeMaxClients = config.GetIntDefault("AiPlayerbot.Bridge.MaxClients", 4);
     bridgeCastAccountPrefix = config.GetStringDefault("AiPlayerbot.Bridge.CastAccountPrefix", "castbot");
+    // Only with the bridge on: the narrator is who speaks for bots then.
+    bridgeQuietBots = bridgePort > 0 && config.GetBoolDefault("AiPlayerbot.Bridge.QuietBots", true);
 
     perfMonEnabled = config.GetBoolDefault("AiPlayerbot.PerfMonEnabled", false);
     bExplicitDbStoreSave = config.GetBoolDefault("AiPlayerbot.ExplicitDbStoreSave", false);

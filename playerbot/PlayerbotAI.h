@@ -438,6 +438,18 @@ public:
     bool SayToParty(std::string msg, bool likePlayer = false);
     bool SayToRaid(std::string msg);
     bool Yell(std::string msg, bool likePlayer = false);
+    // AiPlayerbot.Bridge.QuietBots: with the narrator bridge on, a bot says
+    // and emotes nothing on its own; the narrator speaks for it. A line said
+    // on purpose - by the bridge, or answering the player's own command - is
+    // said inside a Voice. See PlayerbotAI.cpp, "Quiet bots".
+    bool Hushed();
+    struct Voice
+    {
+        Voice();
+        ~Voice();
+        Voice(const Voice&) = delete;
+        Voice& operator=(const Voice&) = delete;
+    };
     bool Say(std::string msg, bool likePlayer = false);
     bool Whisper(std::string msg, std::string receiverName, bool likePlayer = false);
     bool TellPlayer(Player* player, std::ostringstream &stream, PlayerbotSecurityLevel securityLevel = PlayerbotSecurityLevel::PLAYERBOT_SECURITY_ALLOW_ALL, bool isPrivate = true, bool ignoreSilent = false) { return TellPlayer(player, stream.str(), securityLevel, isPrivate, ignoreSilent); }

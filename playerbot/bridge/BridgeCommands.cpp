@@ -296,6 +296,10 @@ std::optional<Json> Bridge::CmdBotSay(const BridgeInbound&, const Json& args)
     const std::string text = RequireString(args, "text");
     RequireSpeech(text);
     const std::string channel = OptionalString(args, "channel", "say");
+    // The narrator's line, said on purpose: it passes the quiet bots switch
+    // (AiPlayerbot.Bridge.QuietBots, PlayerbotAI::Hushed) that stops the
+    // module's own chatter.
+    PlayerbotAI::Voice voice;
     // likePlayer = true sends real chat through the bot's session, so other
     // players and bots hear it and the bridge sees it come back as a chat event.
     if (channel == "say")
@@ -1461,6 +1465,7 @@ std::optional<Json> Bridge::CmdWeather(const BridgeInbound&, const Json& args)
 // This is still not a console. The only thing it can make is a player
 // character on an account the module owns, at or below the realm's level cap.
 
+#include "playerbot/AiFactory.h"
 #include "playerbot/ChatHelper.h"
 #include "playerbot/PlayerbotFactory.h"
 #include "playerbot/Talentspec.h"
@@ -2055,4 +2060,156 @@ void Bridge::FlushPendingOutfits()
         OutfitOnArrival(bot);
         it = pendingOutfits_.erase(it);
     }
+}
+
+// Strangers ---------------------------------------------------------------------------------
+//
+// Who a bot is and what it is about, for the narrator to meet as a stranger:
+// another adventurer, with the class and spec it plays, the trades it works,
+// the quests it holds and how far along it is, what it is doing now and where
+// it is going. All of it is the game's and the module's own record, so a
+// stranger who says "you after the gnoll paws too?" is telling the truth.
+// The owner, 6 October: strangers are like other players - they talk about
+// the quest they are on and what they are good at.
+
+namespace
+{
+    struct Trade
+    {
+        uint16 skill;
+        const char* name;
+        bool primary;
+    };
+
+    // Every profession a character can learn in this era, primary and
+    // secondary: the names are the game's, kept here rather than read from
+    // the client's skill table for one less locale to get wrong.
+    const Trade kTrades[] = {
+        {SKILL_ALCHEMY, "Alchemy", true},           {SKILL_BLACKSMITHING, "Blacksmithing", true},
+        {SKILL_ENCHANTING, "Enchanting", true},     {SKILL_ENGINEERING, "Engineering", true},
+        {SKILL_HERBALISM, "Herbalism", true},       {SKILL_LEATHERWORKING, "Leatherworking", true},
+        {SKILL_MINING, "Mining", true},             {SKILL_SKINNING, "Skinning", true},
+        {SKILL_TAILORING, "Tailoring", true},       {SKILL_COOKING, "Cooking", false},
+        {SKILL_FIRST_AID, "First Aid", false},      {SKILL_FISHING, "Fishing", false},
+    };
+
+    // What kind of place the module is taking a bot to, from its own classes,
+    // most particular first: a quest's objective, a quest's giver or taker, a
+    // boss, mobs to grind, something to gather, somewhere to explore, an NPC
+    // to visit, a zone.
+    const char* DestinationKind(TravelDestination* destination)
+    {
+        if (dynamic_cast<QuestObjectiveTravelDestination*>(destination)) return "quest objective";
+        if (dynamic_cast<QuestRelationTravelDestination*>(destination)) return "quest giver";
+        if (dynamic_cast<BossTravelDestination*>(destination)) return "boss";
+        if (dynamic_cast<GrindTravelDestination*>(destination)) return "grind";
+        if (dynamic_cast<GatherTravelDestination*>(destination)) return "gather";
+        if (dynamic_cast<ExploreTravelDestination*>(destination)) return "explore";
+        if (dynamic_cast<RpgTravelDestination*>(destination)) return "visit";
+        if (dynamic_cast<ZoneTravelDestination*>(destination)) return "zone";
+        return "";
+    }
+}
+
+std::optional<Json> Bridge::CmdBotAbout(const BridgeInbound&, const Json& args)
+{
+    Player* bot = RequireBot(RequireString(args, "bot"));
+    PlayerbotAI* ai = bot->GetPlayerbotAI();
+    Json result;
+    result["unit"] = PlayerRef(bot);
+    result["random"] = sRandomPlayerbotMgr.IsRandomBot(bot);
+    result["grouped"] = bot->GetGroup() != nullptr;
+    result["alive"] = bot->IsAlive();
+    result["in_combat"] = bot->IsInCombat();
+    result["moving"] = bot->IsMoving();
+    if (AreaTableEntry const* zone = GetAreaEntryByAreaID(bot->GetZoneId()))
+        result["zone_name"] = zone->area_name[0];
+    if (AreaTableEntry const* area = GetAreaEntryByAreaID(bot->GetAreaId()))
+        result["area_name"] = area->area_name[0];
+
+    // The spec it plays: the talent tree with the most points, once any are
+    // spent. Below level ten there is none, and saying "Arms" would be a guess.
+    uint32 spent = 0;
+    for (auto const& tab : AiFactory::GetPlayerSpecTabs(bot))
+        spent += uint32(std::max(0, tab.second));
+    result["spec"] = spent ? ChatHelper::specName(bot) : std::string();
+    result["talent_points"] = spent;
+
+    Json trades = Json::array();
+    for (Trade const& trade : kTrades)
+    {
+        if (!bot->HasSkill(trade.skill))
+            continue;
+        Json entry;
+        entry["name"] = trade.name;
+        entry["value"] = uint32(bot->GetSkillValue(trade.skill));
+        entry["max"] = uint32(bot->GetSkillMax(trade.skill));
+        entry["primary"] = trade.primary;
+        trades.push_back(entry);
+    }
+    result["professions"] = trades;
+
+    // The quests it holds, done or not, with what each asks and how far along
+    // (ProgressOf, as a quest in the player's hand reads).
+    Json quests = Json::array();
+    for (auto const& [questId, data] : bot->getQuestStatusMap())
+    {
+        if (quests.size() >= 10)
+            break;
+        if (data.m_rewarded || (data.m_status != QUEST_STATUS_INCOMPLETE && data.m_status != QUEST_STATUS_COMPLETE))
+            continue;
+        Quest const* quest = sObjectMgr.GetQuestTemplate(questId);
+        if (!quest)
+            continue;
+        Json entry;
+        entry["quest_id"] = questId;
+        entry["title"] = quest->GetTitle();
+        entry["level"] = quest->GetQuestLevel();
+        entry["status"] = data.m_status == QUEST_STATUS_COMPLETE ? "complete" : "taken";
+        entry["objectives"] = quest->GetObjectives();
+        entry["progress"] = ProgressOf(bot, quest);
+        quests.push_back(entry);
+    }
+    result["quests"] = quests;
+
+    // What it is doing: the module's last action, and where its travel is
+    // taking it - the destination's own title, what kind of place it is, the
+    // quest it is for, and whether it has arrived and is working there.
+    std::string action;
+    if (Engine* engine = ai->GetCurrentEngine())
+        if (const Action* last = engine->GetLastExecutedAction())
+            action = const_cast<Action*>(last)->getName();   // getName is not const in the module
+    result["action"] = action;
+    Json heading = nullptr;
+    if (AiObjectContext* context = ai->GetAiObjectContext())
+        if (TravelTarget* target = context->GetValue<TravelTarget*>("travel target")->Get())
+            if (target->GetStatus() == TravelStatus::TRAVEL_STATUS_TRAVEL || target->GetStatus() == TravelStatus::TRAVEL_STATUS_WORK)
+                if (TravelDestination* destination = target->GetDestination())
+                {
+                    heading = Json::object();
+                    heading["title"] = destination->GetTitle();
+                    heading["kind"] = DestinationKind(destination);
+                    heading["working"] = target->GetStatus() == TravelStatus::TRAVEL_STATUS_WORK;
+                    if (QuestTravelDestination* forQuest = dynamic_cast<QuestTravelDestination*>(destination))
+                        if (Quest const* quest = forQuest->GetQuestTemplate())
+                            heading["quest"] = quest->GetTitle();
+                }
+    result["heading"] = heading;
+
+    // How far it is from the player, as npc.about says it.
+    const std::string name = OptionalString(args, "player");
+    Player* player = nullptr;
+    if (!name.empty())
+        player = RequireOnlinePlayer(name, "player");
+    else
+    {
+        std::vector<Player*> reals = RealPlayersOnline();
+        if (!reals.empty())
+            player = reals.front();
+    }
+    if (player && player->GetMapId() == bot->GetMapId())
+        result["dist"] = player->GetDistance(bot);
+    else
+        result["dist"] = nullptr;
+    return result;
 }
