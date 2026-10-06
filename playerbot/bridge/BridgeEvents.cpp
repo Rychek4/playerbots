@@ -955,7 +955,31 @@ void Bridge::OnMasterPacket(Player* master, const WorldPacket& packet)
                 uint32 type, lang;
                 p >> type >> lang;
                 if (lang == LANG_ADDON)
+                {
+                    // An addon in the player's own client, reporting what
+                    // only the client knows: what they are looking at, which
+                    // window is open, what is on it (the narrator's ADDON.md).
+                    // The client sends "prefix<tab>text" on the party, raid,
+                    // guild or battleground channel; only the narrator's own
+                    // prefix is forwarded. This hook sees the packet before
+                    // the server's chat handler, so the realm's AddonChannel
+                    // setting does not decide whether it arrives.
+                    if (type == CHAT_MSG_WHISPER || type == CHAT_MSG_CHANNEL)
+                        break;
+                    std::string message;
+                    p >> message;
+                    const size_t tab = message.find('\t');
+                    if (tab == std::string::npos || message.rfind(ADDON_PREFIX, 0) != 0)
+                        break;
+                    const char* via = ChatChannelName(type);
+                    Json data;
+                    data["player"] = PlayerRef(master);
+                    data["channel"] = via ? via : "";
+                    data["prefix"] = message.substr(0, tab);
+                    data["text"] = message.substr(tab + 1);
+                    Emit(EV_CLIENT_ADDON, data);
                     break;
+                }
                 const char* channel = ChatChannelName(type);
                 if (!channel || type == CHAT_MSG_WHISPER_INFORM)
                     break;
