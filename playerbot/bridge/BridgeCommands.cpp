@@ -2190,8 +2190,9 @@ std::optional<Json> Bridge::CmdBotAbout(const BridgeInbound&, const Json& args)
                     heading["title"] = destination->GetTitle();
                     heading["kind"] = DestinationKind(destination);
                     heading["working"] = target->GetStatus() == TravelStatus::TRAVEL_STATUS_WORK;
+                    // The quest id is public; the template accessor is not.
                     if (QuestTravelDestination* forQuest = dynamic_cast<QuestTravelDestination*>(destination))
-                        if (Quest const* quest = forQuest->GetQuestTemplate())
+                        if (Quest const* quest = sObjectMgr.GetQuestTemplate(forQuest->GetQuestId()))
                             heading["quest"] = quest->GetTitle();
                 }
     result["heading"] = heading;
