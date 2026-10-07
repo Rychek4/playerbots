@@ -66,6 +66,12 @@ namespace BridgeProtocol
     constexpr char EV_UNIT_LEFT[] = "unit.left";
     constexpr char EV_MOVEMENT[] = "movement";
     constexpr char EV_BOT_ACTIVITY[] = "bot.activity";
+    constexpr char EV_CLIENT_ADDON[] = "client.addon";
+
+    // The prefix the narrator's own addon sends its addon messages under.
+    // Only these are forwarded (`client.addon`); every other addon's traffic
+    // stays in the game.
+    constexpr char ADDON_PREFIX[] = "NARR";
 
     constexpr uint32 DUPLICATE_WINDOW_MS = 2000;
 }
