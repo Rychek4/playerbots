@@ -711,6 +711,70 @@ namespace
     }
 }
 
+namespace
+{
+    // What a trainer could teach this player now, as the game decides it
+    // when the player opens their list: every spell on it (the creature's
+    // own and its template's) that fits the player's class and race, meets
+    // its condition and shows green - not known, level and skill and earlier
+    // rank met. The same walk as WorldSession::SendTrainerList. `teaches` is
+    // whether this trainer trains this player at all (Creature::IsTrainerOf:
+    // their class, their race for riding, the craft for a profession). A
+    // trainer speaks up only when there is something to learn (the narrator,
+    // the owner, 8 October); a class trainer, a weapon master, a profession
+    // or riding trainer are all the one fact. Names carry their rank.
+    Json TrainerFor(Player* player, Creature* creature, size_t most)
+    {
+        static const char* kKinds[] = {"class", "mounts", "tradeskills", "pets"};
+        CreatureInfo const* info = creature->GetCreatureInfo();
+        const uint32 kind = info ? info->TrainerType : 0u;
+        const bool teaches = creature->IsTrainerOf(player, false);
+
+        Json trainer;
+        trainer["kind"] = kind < sizeof(kKinds) / sizeof(kKinds[0]) ? kKinds[kind] : "";
+        trainer["teaches"] = teaches;
+        Json learnable = Json::array();
+        uint32 count = 0;
+        if (teaches)
+        {
+            std::set<std::string> seen;
+            TrainerSpellData const* lists[] = {creature->GetTrainerSpells(), creature->GetTrainerTemplateSpells()};
+            for (TrainerSpellData const* list : lists)
+            {
+                if (!list)
+                    continue;
+                for (auto const& entry : list->spellList)
+                {
+                    TrainerSpell const* spell = &entry.second;
+                    uint32 reqLevel = 0;
+                    if (!player->IsSpellFitByClassAndRace(spell->learnedSpell, &reqLevel))
+                        continue;
+                    if (spell->conditionId && !sObjectMgr.IsConditionSatisfied(spell->conditionId, player,
+                            creature->GetMap(), creature, CONDITION_FROM_TRAINER))
+                        continue;
+                    reqLevel = spell->isProvidedReqLevel ? spell->reqLevel : std::max(reqLevel, spell->reqLevel);
+                    if (player->GetTrainerSpellState(spell, reqLevel) != TRAINER_SPELL_GREEN)
+                        continue;
+                    ++count;
+                    if (learnable.size() >= most)
+                        continue;
+                    SpellEntry const* learned = sSpellTemplate.LookupEntry<SpellEntry>(spell->learnedSpell);
+                    if (!learned || !learned->SpellName[0] || !learned->SpellName[0][0])
+                        continue;
+                    std::string name(learned->SpellName[0]);
+                    if (learned->Rank[0] && learned->Rank[0][0])
+                        name += " (" + std::string(learned->Rank[0]) + ")";
+                    if (seen.insert(name).second)
+                        learnable.push_back(name);
+                }
+            }
+        }
+        trainer["learnable"] = learnable;
+        trainer["count"] = count;
+        return trainer;
+    }
+}
+
 std::optional<Json> Bridge::CmdNpcAbout(const BridgeInbound&, const Json& args)
 {
     Creature* creature = FindCreature(args);
@@ -773,6 +837,8 @@ std::optional<Json> Bridge::CmdNpcAbout(const BridgeInbound&, const Json& args)
     result["gossip"] = gossip;
     if (creature->GetUInt32Value(UNIT_NPC_FLAGS) & UNIT_NPC_FLAG_VENDOR)
         result["wares"] = WaresOf(creature, 8);
+    if (player && (creature->GetUInt32Value(UNIT_NPC_FLAGS) & UNIT_NPC_FLAG_TRAINER))
+        result["trainer"] = TrainerFor(player, creature, 6);
 
     Json offered = Json::array();
     Json turnIn = Json::array();
