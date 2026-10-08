@@ -956,6 +956,20 @@ std::optional<Json> Bridge::CmdNpcAbout(const BridgeInbound&, const Json& args)
     }
     if (player && (creature->GetUInt32Value(UNIT_NPC_FLAGS) & UNIT_NPC_FLAG_TRAINER))
         result["trainer"] = TrainerFor(player, creature, 6);
+    if (player && (creature->GetUInt32Value(UNIT_NPC_FLAGS) & UNIT_NPC_FLAG_FLIGHTMASTER))
+    {
+        // The flight point this master keeps, and whether the player has it:
+        // a flight master speaks up to somebody who does not (the narrator's
+        // `fly` rule). The nearest node to where the creature stands, for the
+        // player's side, as the game finds it when the player clicks.
+        const uint32 node = sObjectMgr.GetNearestTaxiNode(creature->GetPositionX(), creature->GetPositionY(),
+                                                          creature->GetPositionZ(), creature->GetMapId(), player->GetTeam());
+        TaxiNodesEntry const* entry = node ? sTaxiNodesStore.LookupEntry(node) : nullptr;
+        Json flight;
+        flight["node"] = entry && entry->name[0] ? std::string(entry->name[0]) : std::string();
+        flight["known"] = node ? player->IsTaximaskNodeKnown(node) : true;
+        result["flight"] = flight;
+    }
 
     Json offered = Json::array();
     Json turnIn = Json::array();
