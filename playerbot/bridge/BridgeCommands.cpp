@@ -643,6 +643,51 @@ namespace
         return wares;
     }
 
+    // What the player is running low on, among what this vendor sells: the
+    // consumables and ammunition on its list the player carries some of but
+    // fewer than a quarter of a stack, and the ammunition they have loaded
+    // (PLAYER_AMMO_ID) even at none. Step seven of the narrator's method
+    // (the owner, 8 October): a vendor speaks up when the player needs them,
+    // and "needs" is the game's own count, not a guess from the title. Each
+    // entry carries `name`, `have` and `stack`, up to `most`.
+    Json ShortOf(Player* player, Creature* creature, size_t most)
+    {
+        Json low = Json::array();
+        std::vector<VendorItemData const*> lists;
+        lists.push_back(creature->GetVendorItems());
+#ifndef MANGOSBOT_ZERO
+        lists.push_back(creature->GetVendorTemplateItems());
+#endif
+        const uint32 loaded = player->GetUInt32Value(PLAYER_AMMO_ID);
+        std::set<uint32> seen;
+        for (VendorItemData const* list : lists)
+        {
+            if (!list)
+                continue;
+            for (VendorItem const* sold : list->m_items)
+            {
+                if (low.size() >= most)
+                    return low;
+                ItemPrototype const* proto = sold ? ObjectMgr::GetItemPrototype(sold->item) : nullptr;
+                if (!proto || !proto->Name1 || !seen.insert(sold->item).second)
+                    continue;
+                if (proto->Class != ITEM_CLASS_CONSUMABLE && proto->Class != ITEM_CLASS_PROJECTILE)
+                    continue;
+                const uint32 stack = std::max(1u, proto->GetMaxStackSize());
+                const uint32 have = player->GetItemCount(sold->item);
+                const bool used = have > 0 || sold->item == loaded;
+                if (!used || have >= std::max(1u, stack / 4))
+                    continue;
+                Json entry;
+                entry["name"] = std::string(proto->Name1);
+                entry["have"] = have;
+                entry["stack"] = stack;
+                low.push_back(entry);
+            }
+        }
+        return low;
+    }
+
     // The quests between this one and the player: every quest it gives or
     // takes that the player can take now, holds, or has done, with where it
     // sits in its chain. What a resident remembers of the party is what the
@@ -836,7 +881,11 @@ std::optional<Json> Bridge::CmdNpcAbout(const BridgeInbound&, const Json& args)
     Json gossip = WordsOf(creature, player, 3);
     result["gossip"] = gossip;
     if (creature->GetUInt32Value(UNIT_NPC_FLAGS) & UNIT_NPC_FLAG_VENDOR)
+    {
         result["wares"] = WaresOf(creature, 8);
+        if (player)
+            result["short"] = ShortOf(player, creature, 6);
+    }
     if (player && (creature->GetUInt32Value(UNIT_NPC_FLAGS) & UNIT_NPC_FLAG_TRAINER))
         result["trainer"] = TrainerFor(player, creature, 6);
 
