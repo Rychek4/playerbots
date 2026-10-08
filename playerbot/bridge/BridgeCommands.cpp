@@ -768,6 +768,11 @@ namespace
     // trainer speaks up only when there is something to learn (the narrator,
     // the owner, 8 October); a class trainer, a weapon master, a profession
     // or riding trainer are all the one fact. Names carry their rank.
+    // `known` is whether the player has the skill line this trainer's spells
+    // require - the trade, for a profession trainer; true when none of its
+    // spells require one, a class trainer. The apprenticeship shows green to
+    // anyone, so "something to learn" alone had the blacksmith and the cook
+    // walk up to a player with neither trade (the 14:48 session, 8 October).
     Json TrainerFor(Player* player, Creature* creature, size_t most)
     {
         static const char* kKinds[] = {"class", "mounts", "tradeskills", "pets"};
@@ -780,6 +785,8 @@ namespace
         trainer["teaches"] = teaches;
         Json learnable = Json::array();
         uint32 count = 0;
+        bool requires = false;
+        bool known = false;
         if (teaches)
         {
             std::set<std::string> seen;
@@ -791,6 +798,12 @@ namespace
                 for (auto const& entry : list->spellList)
                 {
                     TrainerSpell const* spell = &entry.second;
+                    if (spell->reqSkill)
+                    {
+                        requires = true;
+                        if (player->HasSkill(uint16(spell->reqSkill)))
+                            known = true;
+                    }
                     uint32 reqLevel = 0;
                     if (!player->IsSpellFitByClassAndRace(spell->learnedSpell, &reqLevel))
                         continue;
@@ -816,6 +829,7 @@ namespace
         }
         trainer["learnable"] = learnable;
         trainer["count"] = count;
+        trainer["known"] = !requires || known;
         return trainer;
     }
 }
