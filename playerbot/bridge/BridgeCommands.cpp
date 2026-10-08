@@ -833,7 +833,7 @@ namespace
         trainer["teaches"] = teaches;
         Json learnable = Json::array();
         uint32 count = 0;
-        bool requires = false;
+        bool needsSkill = false;
         bool known = false;
         if (teaches)
         {
@@ -848,7 +848,7 @@ namespace
                     TrainerSpell const* spell = &entry.second;
                     if (spell->reqSkill)
                     {
-                        requires = true;
+                        needsSkill = true;
                         if (player->HasSkill(uint16(spell->reqSkill)))
                             known = true;
                     }
@@ -877,7 +877,7 @@ namespace
         }
         trainer["learnable"] = learnable;
         trainer["count"] = count;
-        trainer["known"] = !requires || known;
+        trainer["known"] = !needsSkill || known;
         return trainer;
     }
 }
