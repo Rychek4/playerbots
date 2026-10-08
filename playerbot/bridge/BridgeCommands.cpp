@@ -967,7 +967,7 @@ std::optional<Json> Bridge::CmdNpcAbout(const BridgeInbound&, const Json& args)
         TaxiNodesEntry const* entry = node ? sTaxiNodesStore.LookupEntry(node) : nullptr;
         Json flight;
         flight["node"] = entry && entry->name[0] ? std::string(entry->name[0]) : std::string();
-        flight["known"] = node ? player->IsTaximaskNodeKnown(node) : true;
+        flight["known"] = node ? player->m_taxi.IsTaximaskNodeKnown(node) : true;
         result["flight"] = flight;
     }
 
