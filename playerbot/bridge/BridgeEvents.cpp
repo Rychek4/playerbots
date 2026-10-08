@@ -246,6 +246,10 @@ Json Bridge::PartyMember(Player* player)
     durability["broken"] = broken;
     durability["worst"] = worst;
     member["durability"] = durability;
+    // Talent points unspent, the other need the game keeps on the player
+    // (step seven of the narrator's method, the owner, 8 October): a class
+    // trainer speaks up when there are points to spend.
+    member["talent_points"] = player->GetFreeTalentPoints();
     return member;
 }
 
