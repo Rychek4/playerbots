@@ -212,6 +212,40 @@ Json Bridge::PartyMember(Player* player)
     member["in_combat"] = player->IsInCombat();
     const ObjectGuid target = player->GetSelectionGuid();
     member["target"] = target.IsEmpty() ? Json(nullptr) : Json(GuidString(target));
+
+    // The wear on what they have equipped, as the game keeps it: the worst-
+    // worn piece (percent of its durability, and its name) and how many are
+    // broken outright. A repairer speaks up only when the gear needs it (the
+    // narrator's rules.worth_mending), so this is read fresh every snapshot
+    // rather than asked of each blacksmith. Pieces that do not wear (rings,
+    // trinkets, a cloak in some versions) have no maximum and are left out.
+    uint32 lowest = 100;
+    uint32 broken = 0;
+    std::string worst;
+    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+    {
+        Item* item = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+        if (!item)
+            continue;
+        const uint32 most = item->GetUInt32Value(ITEM_FIELD_MAXDURABILITY);
+        if (!most)
+            continue;
+        const uint32 left = item->GetUInt32Value(ITEM_FIELD_DURABILITY);
+        if (!left)
+            ++broken;
+        const uint32 pct = left * 100 / most;
+        if (pct < lowest)
+        {
+            lowest = pct;
+            ItemPrototype const* proto = item->GetProto();
+            worst = proto && proto->Name1 ? std::string(proto->Name1) : std::string();
+        }
+    }
+    Json durability;
+    durability["lowest"] = lowest;
+    durability["broken"] = broken;
+    durability["worst"] = worst;
+    member["durability"] = durability;
     return member;
 }
 
