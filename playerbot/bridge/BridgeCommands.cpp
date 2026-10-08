@@ -562,6 +562,54 @@ namespace
         return words;
     }
 
+    // A creature's directions: the options on its gossip menu, and one level
+    // of submenu, that point at a place on the map (points_of_interest). A
+    // guard's menu is the lay of the town - bank, inn, gryphon master, the
+    // trainers - and the narrator reads it two ways: a guard greets a party
+    // new to the area with it, and it is the true answer when a guard is
+    // asked the way (the owner, 8 October: even guards have a full list of
+    // directions to offer). Each entry: `text` (the option as the player
+    // sees it), `place` (the marker's name), `x`, `y`. Options the player
+    // does not meet the condition for are left out, as the game leaves them.
+    void DirectionsFrom(Player* player, Creature* creature, uint32 menuId, Json& out, size_t most, int depth)
+    {
+        if (!menuId || depth > 1 || out.size() >= most)
+            return;
+        GossipMenuItemsMapBounds bounds = sObjectMgr.GetGossipMenuItemsMapBounds(menuId);
+        for (auto it = bounds.first; it != bounds.second && out.size() < most; ++it)
+        {
+            GossipMenuItems const& item = it->second;
+            if (item.conditionId && !sObjectMgr.IsConditionSatisfied(item.conditionId, player, player->GetMap(),
+                    creature, CONDITION_FROM_GOSSIP_OPTION))
+                continue;
+            if (item.action_poi_id)
+            {
+                PointOfInterest const* poi = sObjectMgr.GetPointOfInterest(item.action_poi_id);
+                if (!poi)
+                    continue;
+                std::string text = item.option_text;
+                if (item.option_broadcast_text)
+                    if (BroadcastText const* bct = sObjectMgr.GetBroadcastText(item.option_broadcast_text))
+                        text = bct->GetText(-1);
+                Json entry;
+                entry["text"] = text;
+                entry["place"] = poi->icon_name;
+                entry["x"] = poi->x;
+                entry["y"] = poi->y;
+                out.push_back(entry);
+            }
+            else if (item.action_menu_id > 0)
+                DirectionsFrom(player, creature, uint32(item.action_menu_id), out, most, depth + 1);
+        }
+    }
+
+    Json DirectionsOf(Player* player, Creature* creature, size_t most)
+    {
+        Json out = Json::array();
+        DirectionsFrom(player, creature, creature->GetDefaultGossipMenuId(), out, most, 0);
+        return out;
+    }
+
     // What a quest the player holds asks for, and how far along it is: one
     // entry per objective, the thing by name, how many the player has and
     // how many it wants. The narrator raises a quest in hand when the party
@@ -768,6 +816,11 @@ namespace
     // trainer speaks up only when there is something to learn (the narrator,
     // the owner, 8 October); a class trainer, a weapon master, a profession
     // or riding trainer are all the one fact. Names carry their rank.
+    // `known` is whether the player has the skill line this trainer's spells
+    // require - the trade, for a profession trainer; true when none of its
+    // spells require one, a class trainer. The apprenticeship shows green to
+    // anyone, so "something to learn" alone had the blacksmith and the cook
+    // walk up to a player with neither trade (the 14:48 session, 8 October).
     Json TrainerFor(Player* player, Creature* creature, size_t most)
     {
         static const char* kKinds[] = {"class", "mounts", "tradeskills", "pets"};
@@ -780,6 +833,8 @@ namespace
         trainer["teaches"] = teaches;
         Json learnable = Json::array();
         uint32 count = 0;
+        bool needsSkill = false;
+        bool known = false;
         if (teaches)
         {
             std::set<std::string> seen;
@@ -791,6 +846,12 @@ namespace
                 for (auto const& entry : list->spellList)
                 {
                     TrainerSpell const* spell = &entry.second;
+                    if (spell->reqSkill)
+                    {
+                        needsSkill = true;
+                        if (player->HasSkill(uint16(spell->reqSkill)))
+                            known = true;
+                    }
                     uint32 reqLevel = 0;
                     if (!player->IsSpellFitByClassAndRace(spell->learnedSpell, &reqLevel))
                         continue;
@@ -816,6 +877,7 @@ namespace
         }
         trainer["learnable"] = learnable;
         trainer["count"] = count;
+        trainer["known"] = !needsSkill || known;
         return trainer;
     }
 }
@@ -880,6 +942,12 @@ std::optional<Json> Bridge::CmdNpcAbout(const BridgeInbound&, const Json& args)
     // for this player, and its greetings over quests and training.
     Json gossip = WordsOf(creature, player, 3);
     result["gossip"] = gossip;
+    if (player)
+    {
+        Json directions = DirectionsOf(player, creature, 12);
+        if (!directions.empty())
+            result["directions"] = directions;
+    }
     if (creature->GetUInt32Value(UNIT_NPC_FLAGS) & UNIT_NPC_FLAG_VENDOR)
     {
         result["wares"] = WaresOf(creature, 8);
@@ -888,6 +956,20 @@ std::optional<Json> Bridge::CmdNpcAbout(const BridgeInbound&, const Json& args)
     }
     if (player && (creature->GetUInt32Value(UNIT_NPC_FLAGS) & UNIT_NPC_FLAG_TRAINER))
         result["trainer"] = TrainerFor(player, creature, 6);
+    if (player && (creature->GetUInt32Value(UNIT_NPC_FLAGS) & UNIT_NPC_FLAG_FLIGHTMASTER))
+    {
+        // The flight point this master keeps, and whether the player has it:
+        // a flight master speaks up to somebody who does not (the narrator's
+        // `fly` rule). The nearest node to where the creature stands, for the
+        // player's side, as the game finds it when the player clicks.
+        const uint32 node = sObjectMgr.GetNearestTaxiNode(creature->GetPositionX(), creature->GetPositionY(),
+                                                          creature->GetPositionZ(), creature->GetMapId(), player->GetTeam());
+        TaxiNodesEntry const* entry = node ? sTaxiNodesStore.LookupEntry(node) : nullptr;
+        Json flight;
+        flight["node"] = entry && entry->name[0] ? std::string(entry->name[0]) : std::string();
+        flight["known"] = node ? player->m_taxi.IsTaximaskNodeKnown(node) : true;
+        result["flight"] = flight;
+    }
 
     Json offered = Json::array();
     Json turnIn = Json::array();

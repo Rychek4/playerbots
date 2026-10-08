@@ -22,6 +22,9 @@
 #include "Groups/Group.h"
 #include "Log/Log.h"
 #include "Server/DBCStores.h"
+#include "Entities/Bag.h"
+#include "Entities/Pet.h"
+#include "Maps/GridMap.h"
 #include "Server/DBCStructure.h"
 #include "Server/Opcodes.h"
 #include "Server/WorldPacket.h"
@@ -250,6 +253,66 @@ Json Bridge::PartyMember(Player* player)
     // (step seven of the narrator's method, the owner, 8 October): a class
     // trainer speaks up when there are points to spend.
     member["talent_points"] = player->GetFreeTalentPoints();
+
+    // The needs the other services meet (the narrator's rules; the owner, 8
+    // October: almost every NPC has something to offer). Where the hearth is
+    // bound: an innkeeper speaks when it is bound somewhere else. The bags:
+    // a banker, when they are nearly full. What could be sold - uncommon or
+    // better, not bound, not a quest item: an auctioneer. The pet: a stable
+    // master, to a hunter with one. All read fresh every snapshot.
+    {
+        float hx = 0.f, hy = 0.f, hz = 0.f;
+        uint32 hmap = 0;
+        player->GetHomebindLocation(hx, hy, hz, hmap);
+        const uint32 harea = sTerrainMgr.GetAreaId(hmap, hx, hy, hz);
+        Json home;
+        home["map"] = hmap;
+        home["area"] = harea;
+        AreaTableEntry const* hentry = GetAreaEntryByAreaID(harea);
+        home["area_name"] = hentry && hentry->area_name[0] ? std::string(hentry->area_name[0]) : std::string();
+        member["home"] = home;
+    }
+    uint32 slots = INVENTORY_SLOT_ITEM_END - INVENTORY_SLOT_ITEM_START;
+    uint32 free = 0;
+    uint32 sellableCount = 0;
+    Json sellable = Json::array();
+    auto consider = [&](Item* item)
+    {
+        if (!item)
+            return;
+        ItemPrototype const* proto = item->GetProto();
+        if (!proto || proto->Quality < ITEM_QUALITY_UNCOMMON || proto->Class == ITEM_CLASS_QUEST || item->IsSoulBound())
+            return;
+        ++sellableCount;
+        if (sellable.size() < 3 && proto->Name1)
+            sellable.push_back(std::string(proto->Name1));
+    };
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+    {
+        Item* item = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+        if (!item)
+            ++free;
+        consider(item);
+    }
+    for (uint8 slot = INVENTORY_SLOT_BAG_START; slot < INVENTORY_SLOT_BAG_END; ++slot)
+    {
+        Item* item = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+        if (!item || !item->IsBag())
+            continue;
+        Bag* bag = static_cast<Bag*>(item);
+        slots += bag->GetBagSize();
+        free += bag->GetFreeSlots();
+        for (uint32 i = 0; i < bag->GetBagSize(); ++i)
+            consider(bag->GetItemByPos(uint8(i)));
+    }
+    Json bags;
+    bags["free"] = free;
+    bags["slots"] = slots;
+    member["bags"] = bags;
+    member["sellable"] = sellable;
+    member["sellable_count"] = sellableCount;
+    Pet* pet = player->GetPet();
+    member["pet"] = pet ? std::string(pet->GetName()) : std::string();
     return member;
 }
 
