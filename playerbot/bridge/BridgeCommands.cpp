@@ -562,6 +562,54 @@ namespace
         return words;
     }
 
+    // A creature's directions: the options on its gossip menu, and one level
+    // of submenu, that point at a place on the map (points_of_interest). A
+    // guard's menu is the lay of the town - bank, inn, gryphon master, the
+    // trainers - and the narrator reads it two ways: a guard greets a party
+    // new to the area with it, and it is the true answer when a guard is
+    // asked the way (the owner, 8 October: even guards have a full list of
+    // directions to offer). Each entry: `text` (the option as the player
+    // sees it), `place` (the marker's name), `x`, `y`. Options the player
+    // does not meet the condition for are left out, as the game leaves them.
+    void DirectionsFrom(Player* player, Creature* creature, uint32 menuId, Json& out, size_t most, int depth)
+    {
+        if (!menuId || depth > 1 || out.size() >= most)
+            return;
+        GossipMenuItemsMapBounds bounds = sObjectMgr.GetGossipMenuItemsMapBounds(menuId);
+        for (auto it = bounds.first; it != bounds.second && out.size() < most; ++it)
+        {
+            GossipMenuItems const& item = it->second;
+            if (item.conditionId && !sObjectMgr.IsConditionSatisfied(item.conditionId, player, player->GetMap(),
+                    creature, CONDITION_FROM_GOSSIP_OPTION))
+                continue;
+            if (item.action_poi_id)
+            {
+                PointOfInterest const* poi = sObjectMgr.GetPointOfInterest(item.action_poi_id);
+                if (!poi)
+                    continue;
+                std::string text = item.option_text;
+                if (item.option_broadcast_text)
+                    if (BroadcastText const* bct = sObjectMgr.GetBroadcastText(item.option_broadcast_text))
+                        text = bct->GetText(-1);
+                Json entry;
+                entry["text"] = text;
+                entry["place"] = poi->icon_name;
+                entry["x"] = poi->x;
+                entry["y"] = poi->y;
+                out.push_back(entry);
+            }
+            else if (item.action_menu_id > 0)
+                DirectionsFrom(player, creature, uint32(item.action_menu_id), out, most, depth + 1);
+        }
+    }
+
+    Json DirectionsOf(Player* player, Creature* creature, size_t most)
+    {
+        Json out = Json::array();
+        DirectionsFrom(player, creature, creature->GetDefaultGossipMenuId(), out, most, 0);
+        return out;
+    }
+
     // What a quest the player holds asks for, and how far along it is: one
     // entry per objective, the thing by name, how many the player has and
     // how many it wants. The narrator raises a quest in hand when the party
@@ -894,6 +942,12 @@ std::optional<Json> Bridge::CmdNpcAbout(const BridgeInbound&, const Json& args)
     // for this player, and its greetings over quests and training.
     Json gossip = WordsOf(creature, player, 3);
     result["gossip"] = gossip;
+    if (player)
+    {
+        Json directions = DirectionsOf(player, creature, 12);
+        if (!directions.empty())
+            result["directions"] = directions;
+    }
     if (creature->GetUInt32Value(UNIT_NPC_FLAGS) & UNIT_NPC_FLAG_VENDOR)
     {
         result["wares"] = WaresOf(creature, 8);
