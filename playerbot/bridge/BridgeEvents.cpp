@@ -280,6 +280,10 @@ Json Bridge::PartyMember(Player* player)
     member["power_pct"] = maxPower ? int32(player->GetPower(power) * 100 / maxPower) : 0;
     member["alive"] = player->IsAlive();
     member["in_combat"] = player->IsInCombat();
+    // Riding or on foot, as the game has it: the narrator's page says so,
+    // so the companions do not talk of horses nobody has (the owner, 10
+    // October; nobody rides before level 40 in Classic).
+    member["mounted"] = player->IsMounted();
     const ObjectGuid target = player->GetSelectionGuid();
     member["target"] = target.IsEmpty() ? Json(nullptr) : Json(GuidString(target));
 
