@@ -786,7 +786,13 @@ namespace
             thread["prev"] = uint32(std::abs(quest->GetPrevQuestId()));
             thread["next"] = quest->GetNextQuestInChain();
             if (rank == 2 && entry.second.second)
+            {
                 thread["reward_text"] = quest->GetOfferRewardText();
+                // What the work was, for a favour remembered: the narrator
+                // had only the title, and Osric Strang remembered 'Continue
+                // to Stormwind' as getting the party back to the city.
+                thread["objectives"] = quest->GetObjectives();
+            }
             if (rank <= 1)
             {
                 // Held, done or not: what it asks for, and how far along.

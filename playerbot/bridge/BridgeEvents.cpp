@@ -284,6 +284,12 @@ Json Bridge::PartyMember(Player* player)
     // so the companions do not talk of horses nobody has (the owner, 10
     // October; nobody rides before level 40 in Classic).
     member["mounted"] = player->IsMounted();
+    // On a flight path (the owner, 10 October): the game counts the gryphon
+    // as a mount, and the narrator read a flight from Sentinel Hill to
+    // Stormwind as a ride over every area beneath it. Where it is going is
+    // not read: the core keeps the route private, and its one public way to
+    // it asserts when a flight is between maps.
+    member["flying"] = player->IsTaxiFlying();
     const ObjectGuid target = player->GetSelectionGuid();
     member["target"] = target.IsEmpty() ? Json(nullptr) : Json(GuidString(target));
 
