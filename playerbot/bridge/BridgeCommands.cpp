@@ -1725,6 +1725,28 @@ std::optional<Json> Bridge::CmdPlayerSay(const BridgeInbound&, const Json& args)
     return result;
 }
 
+std::optional<Json> Bridge::CmdPlayerEmote(const BridgeInbound&, const Json& args)
+{
+    // A text emote (/wave, /bow, /dance) as the client sends one: the
+    // animation and the "You wave at ..." line, at whoever the player has
+    // selected, through the core's own handler. The overlay's chat box types
+    // these; the client's own box is not in front while it is.
+    Player* player = RequireOnlinePlayer(RequireString(args, "player"), "player");
+    const uint32 emote = OptionalUnsigned(args, "emote", 0);
+    if (emote == 0)
+        throw BridgeCommandError("argument 'emote' must be a text emote id");
+
+    // Queued, as player.say is: the session handles it on its next update.
+    WorldPacket packet(CMSG_TEXT_EMOTE);
+    packet << uint32(emote) << uint32(0) << player->GetSelectionGuid();
+    player->GetSession()->QueuePacket(std::unique_ptr<WorldPacket>(new WorldPacket(packet)));
+
+    Json result;
+    result["queued"] = true;
+    result["emote"] = emote;
+    return result;
+}
+
 std::optional<Json> Bridge::CmdWeather(const BridgeInbound&, const Json& args)
 {
     const std::string typeName = OptionalString(args, "type", "fine");

@@ -34,6 +34,7 @@ Bridge::Bridge()
     handlers_["bot.place"] = &Bridge::CmdBotPlace;
     handlers_["bot.strategy"] = &Bridge::CmdBotStrategy;
     handlers_["player.say"] = &Bridge::CmdPlayerSay;
+    handlers_["player.emote"] = &Bridge::CmdPlayerEmote;
     handlers_["weather"] = &Bridge::CmdWeather;
     handlers_["bot.create"] = &Bridge::CmdBotCreate;
     handlers_["bot.delete"] = &Bridge::CmdBotDelete;
