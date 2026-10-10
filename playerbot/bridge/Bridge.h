@@ -189,6 +189,7 @@ private:
     std::optional<Json> CmdBotPlace(const BridgeInbound& in, const Json& args);
     std::optional<Json> CmdBotStrategy(const BridgeInbound& in, const Json& args);
     std::optional<Json> CmdPlayerSay(const BridgeInbound& in, const Json& args);
+    std::optional<Json> CmdPlayerEmote(const BridgeInbound& in, const Json& args);
     std::optional<Json> CmdWeather(const BridgeInbound& in, const Json& args);
     // Characters made to order (BridgeCommands.cpp, "Cast characters")
     std::optional<Json> CmdBotCreate(const BridgeInbound& in, const Json& args);
