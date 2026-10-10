@@ -399,6 +399,8 @@ Json Bridge::BuildScene(Player* center)
         auto found = weather_.find(center->GetObjectGuid());
         scene["weather"] = found != weather_.end() ? Json{{"type", found->second["type"]}, {"grade", found->second["grade"]}} : Json();
     }
+    // What the player is working on, with how far along each objective is.
+    scene["quests"] = QuestLog(center, 20);
 
     Json party = Json::array();
     if (Group* group = center->GetGroup())
@@ -977,6 +979,22 @@ void Bridge::OnOutgoingPacket(Player* receiver, const WorldPacket& packet)
                 data["quest_id"] = questId;
                 AddQuestName(data, questId);
                 Emit(EV_QUEST_UPDATE, data);
+                break;
+            }
+
+            case SMSG_QUESTUPDATE_ADD_KILL:
+            case SMSG_QUESTUPDATE_ADD_ITEM:
+            {
+                // A kill or an item that counts toward the real player's work:
+                // the server has already counted it, so the whole log, read
+                // now, says where every objective stands ("Goretusk Liver, 4
+                // of 8"). The companions' copies of these are not ours.
+                if (receiver->GetPlayerbotAI() && !receiver->GetPlayerbotAI()->IsRealPlayer())
+                    break;
+                Json data;
+                data["player"] = PlayerRef(receiver);
+                data["quests"] = QuestLog(receiver, 20);
+                Emit(EV_QUEST_PROGRESS, data);
                 break;
             }
 
