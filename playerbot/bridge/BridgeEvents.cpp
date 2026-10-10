@@ -21,6 +21,7 @@
 #include "Grids/GridNotifiersImpl.h"
 #include "Groups/Group.h"
 #include "Log/Log.h"
+#include "Loot/LootMgr.h"
 #include "Server/DBCStores.h"
 #include "Entities/Bag.h"
 #include "Entities/Pet.h"
@@ -82,6 +83,43 @@ namespace
             default:
                 return false;
         }
+    }
+
+    // A creature's rank as the game names it (CreatureInfo::Rank).
+    const char* RankName(uint32 rank)
+    {
+        switch (rank)
+        {
+            case CREATURE_ELITE_ELITE:     return "elite";
+            case CREATURE_ELITE_RAREELITE: return "rare elite";
+            case CREATURE_ELITE_WORLDBOSS: return "boss";
+            case CREATURE_ELITE_RARE:      return "rare";
+            default:                       return "normal";
+        }
+    }
+
+    // Whether killing this creature does the player's work: a kill one of
+    // their quests still needs, or loot one still needs (the core's own
+    // check, the one that decides whether the item drops for them). Exact,
+    // by entry and loot table: never by name.
+    bool QuestTarget(Player* player, Creature* creature)
+    {
+        CreatureInfo const* info = creature->GetCreatureInfo();
+        if (!info)
+            return false;
+        for (auto const& [questId, data] : player->getQuestStatusMap())
+        {
+            if (data.m_rewarded || data.m_status != QUEST_STATUS_INCOMPLETE)
+                continue;
+            Quest const* quest = sObjectMgr.GetQuestTemplate(questId);
+            if (!quest)
+                continue;
+            for (int i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
+                if (quest->ReqCreatureOrGOId[i] == int32(info->Entry) && quest->ReqCreatureOrGOCount[i]
+                        && data.m_creatureOrGOcount[i] < quest->ReqCreatureOrGOCount[i])
+                    return true;
+        }
+        return info->LootId && LootTemplates_Creature.HaveQuestLootForPlayer(info->LootId, player);
     }
 
     void AddQuestName(Json& out, uint32 questId)
@@ -198,6 +236,7 @@ Json Bridge::UnitRef(Unit* unit)
             if (info->SubName && *info->SubName)
                 ref["sub_name"] = info->SubName;
             ref["creature_type"] = info->CreatureType;
+            ref["rank"] = RankName(info->Rank);
         }
     }
     return ref;
@@ -241,6 +280,10 @@ Json Bridge::PartyMember(Player* player)
     member["power_pct"] = maxPower ? int32(player->GetPower(power) * 100 / maxPower) : 0;
     member["alive"] = player->IsAlive();
     member["in_combat"] = player->IsInCombat();
+    // Riding or on foot, as the game has it: the narrator's page says so,
+    // so the companions do not talk of horses nobody has (the owner, 10
+    // October; nobody rides before level 40 in Classic).
+    member["mounted"] = player->IsMounted();
     const ObjectGuid target = player->GetSelectionGuid();
     member["target"] = target.IsEmpty() ? Json(nullptr) : Json(GuidString(target));
 
@@ -371,6 +414,7 @@ Json Bridge::NearbyUnit(Player* center, Unit* unit)
         if (flags & UNIT_NPC_FLAG_REPAIR)       services.push_back("repair");
         if (flags & UNIT_NPC_FLAG_BATTLEMASTER) services.push_back("battlemaster");
         entry["npc_flags"] = services;
+        entry["quest_target"] = QuestTarget(center, static_cast<Creature*>(unit));
     }
     return entry;
 }
@@ -399,6 +443,8 @@ Json Bridge::BuildScene(Player* center)
         auto found = weather_.find(center->GetObjectGuid());
         scene["weather"] = found != weather_.end() ? Json{{"type", found->second["type"]}, {"grade", found->second["grade"]}} : Json();
     }
+    // What the player is working on, with how far along each objective is.
+    scene["quests"] = QuestLog(center, 20);
 
     Json party = Json::array();
     if (Group* group = center->GetGroup())
@@ -977,6 +1023,22 @@ void Bridge::OnOutgoingPacket(Player* receiver, const WorldPacket& packet)
                 data["quest_id"] = questId;
                 AddQuestName(data, questId);
                 Emit(EV_QUEST_UPDATE, data);
+                break;
+            }
+
+            case SMSG_QUESTUPDATE_ADD_KILL:
+            case SMSG_QUESTUPDATE_ADD_ITEM:
+            {
+                // A kill or an item that counts toward the real player's work:
+                // the server has already counted it, so the whole log, read
+                // now, says where every objective stands ("Goretusk Liver, 4
+                // of 8"). The companions' copies of these are not ours.
+                if (receiver->GetPlayerbotAI() && !receiver->GetPlayerbotAI()->IsRealPlayer())
+                    break;
+                Json data;
+                data["player"] = PlayerRef(receiver);
+                data["quests"] = QuestLog(receiver, 20);
+                Emit(EV_QUEST_PROGRESS, data);
                 break;
             }
 

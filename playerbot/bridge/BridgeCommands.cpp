@@ -804,6 +804,33 @@ namespace
     }
 }
 
+// The quests a player holds, done or not, with what each asks and how far
+// along: the scene's for the real player (the narrator's `player.quests`,
+// a run's "Goretusk Liver: 4 of 8") and bot.about's for a stranger.
+Json Bridge::QuestLog(Player* player, size_t most)
+{
+    Json quests = Json::array();
+    for (auto const& [questId, data] : player->getQuestStatusMap())
+    {
+        if (quests.size() >= most)
+            break;
+        if (data.m_rewarded || (data.m_status != QUEST_STATUS_INCOMPLETE && data.m_status != QUEST_STATUS_COMPLETE))
+            continue;
+        Quest const* quest = sObjectMgr.GetQuestTemplate(questId);
+        if (!quest)
+            continue;
+        Json entry;
+        entry["quest_id"] = questId;
+        entry["title"] = quest->GetTitle();
+        entry["level"] = quest->GetQuestLevel();
+        entry["status"] = data.m_status == QUEST_STATUS_COMPLETE ? "complete" : "taken";
+        entry["objectives"] = quest->GetObjectives();
+        entry["progress"] = ProgressOf(player, quest);
+        quests.push_back(entry);
+    }
+    return quests;
+}
+
 namespace
 {
     // What a trainer could teach this player now, as the game decides it
@@ -2454,26 +2481,7 @@ std::optional<Json> Bridge::CmdBotAbout(const BridgeInbound&, const Json& args)
 
     // The quests it holds, done or not, with what each asks and how far along
     // (ProgressOf, as a quest in the player's hand reads).
-    Json quests = Json::array();
-    for (auto const& [questId, data] : bot->getQuestStatusMap())
-    {
-        if (quests.size() >= 10)
-            break;
-        if (data.m_rewarded || (data.m_status != QUEST_STATUS_INCOMPLETE && data.m_status != QUEST_STATUS_COMPLETE))
-            continue;
-        Quest const* quest = sObjectMgr.GetQuestTemplate(questId);
-        if (!quest)
-            continue;
-        Json entry;
-        entry["quest_id"] = questId;
-        entry["title"] = quest->GetTitle();
-        entry["level"] = quest->GetQuestLevel();
-        entry["status"] = data.m_status == QUEST_STATUS_COMPLETE ? "complete" : "taken";
-        entry["objectives"] = quest->GetObjectives();
-        entry["progress"] = ProgressOf(bot, quest);
-        quests.push_back(entry);
-    }
-    result["quests"] = quests;
+    result["quests"] = QuestLog(bot, 10);
 
     // What it is doing: the module's last action, and where its travel is
     // taking it - the destination's own title, what kind of place it is, the

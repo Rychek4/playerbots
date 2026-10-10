@@ -67,6 +67,7 @@ namespace BridgeProtocol
     constexpr char EV_MOVEMENT[] = "movement";
     constexpr char EV_BOT_ACTIVITY[] = "bot.activity";
     constexpr char EV_WEATHER[] = "weather";
+    constexpr char EV_QUEST_PROGRESS[] = "quest.progress";
 
     constexpr uint32 DUPLICATE_WINDOW_MS = 2000;
 }
@@ -122,6 +123,7 @@ public:
     static Json Position(WorldObject* object);
     static void AddZone(WorldObject* object, Json& out);
     static Json PartyMember(Player* player);
+    static Json QuestLog(Player* player, size_t most);
     static Json NearbyUnit(Player* center, Unit* unit);
     Json BuildScene(Player* center);
 
