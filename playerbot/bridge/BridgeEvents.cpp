@@ -13,6 +13,7 @@
 
 #include "Entities/Creature.h"
 #include "Entities/Player.h"
+#include "Entities/Transports.h"
 #include "Entities/Unit.h"
 #include "Globals/ObjectAccessor.h"
 #include "Globals/ObjectMgr.h"
@@ -290,6 +291,16 @@ Json Bridge::PartyMember(Player* player)
     // not read: the core keeps the route private, and its one public way to
     // it asserts when a flight is between maps.
     member["flying"] = player->IsTaxiFlying();
+    // On a boat or a zeppelin (the owner, 10 October: a sea crossing is one
+    // journey, as a flight is): the ship's name, or empty. Only the ships
+    // that cross between ports (MO transports); a city's lift is not one.
+    GenericTransport* ship = player->GetTransport();
+    member["transport"] = ship && ship->GetGoType() == GAMEOBJECT_TYPE_MO_TRANSPORT ? std::string(ship->GetName())
+                                                                                     : std::string();
+    // Indoors (a building, a mine, a cave), as the game's own terrain has
+    // it: the narrator's page does not speak of the weather in there.
+    member["indoors"] = !player->GetTerrain()->IsOutdoors(player->GetPositionX(), player->GetPositionY(),
+                                                          player->GetPositionZ());
     const ObjectGuid target = player->GetSelectionGuid();
     member["target"] = target.IsEmpty() ? Json(nullptr) : Json(GuidString(target));
 
