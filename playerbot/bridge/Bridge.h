@@ -66,6 +66,7 @@ namespace BridgeProtocol
     constexpr char EV_UNIT_LEFT[] = "unit.left";
     constexpr char EV_MOVEMENT[] = "movement";
     constexpr char EV_BOT_ACTIVITY[] = "bot.activity";
+    constexpr char EV_WEATHER[] = "weather";
 
     constexpr uint32 DUPLICATE_WINDOW_MS = 2000;
 }
@@ -229,6 +230,13 @@ private:
 
     std::mutex duplicatesMutex_;
     std::unordered_map<std::string, uint32> duplicates_;
+
+    // The weather the server last sent each real player (SMSG_WEATHER, on
+    // entering a zone and on every change), read off the packet because the
+    // core keeps a zone's weather private. Written from the player's thread,
+    // read by the scene on the world thread.
+    std::mutex weatherMutex_;
+    std::map<ObjectGuid, Json> weather_;
 
     // World thread only
     std::map<ObjectGuid, UnitState> tracked_;                              // party members of real players

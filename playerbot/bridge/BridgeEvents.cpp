@@ -29,8 +29,13 @@
 #include "Server/Opcodes.h"
 #include "Server/WorldPacket.h"
 #include "Util/ByteBuffer.h"
+#include "World/World.h"
 
 #include <algorithm>
+#include <mutex>
+#include <cstdio>
+#include <ctime>
+#include <cmath>
 
 using namespace BridgeProtocol;
 
@@ -83,6 +88,29 @@ namespace
     {
         if (Quest const* quest = sObjectMgr.GetQuestTemplate(questId))
             out["quest_name"] = quest->GetTitle();
+    }
+
+    // SMSG_WEATHER's first field, as a word. Classic sends the weather's
+    // type (WeatherType); the later clients send its state (WeatherState).
+    std::string WeatherName(uint32 kind)
+    {
+#if defined(MANGOSBOT_ZERO)
+        switch (kind)
+        {
+            case 1: return "rain";
+            case 2: return "snow";
+            case 3: return "storm";
+            default: return "fine";
+        }
+#else
+        switch (kind)
+        {
+            case 3: case 4: case 5: return "rain";
+            case 6: case 7: case 8: return "snow";
+            case 22: case 41: case 42: case 86: return "storm";
+            default: return "fine";
+        }
+#endif
     }
 
     Json UnitOrGuid(Unit* unit, ObjectGuid guid)
@@ -352,6 +380,25 @@ Json Bridge::BuildScene(Player* center)
     Json scene;
     scene["center"] = GuidString(center->GetObjectGuid());
     AddZone(center, scene);
+
+    // The sky as the player sees it: the game's clock (the server's local
+    // time, which the client's day and night follow) and the weather the
+    // server last sent them, or null before it has.
+    const time_t now = sWorld.GetGameTime();
+    std::tm local {};
+#ifdef _WIN32
+    localtime_s(&local, &now);
+#else
+    localtime_r(&now, &local);
+#endif
+    char clock[6];
+    std::snprintf(clock, sizeof(clock), "%02d:%02d", local.tm_hour, local.tm_min);
+    scene["game_time"] = clock;
+    {
+        std::lock_guard<std::mutex> lock(weatherMutex_);
+        auto found = weather_.find(center->GetObjectGuid());
+        scene["weather"] = found != weather_.end() ? Json{{"type", found->second["type"]}, {"grade", found->second["grade"]}} : Json();
+    }
 
     Json party = Json::array();
     if (Group* group = center->GetGroup())
@@ -930,6 +977,33 @@ void Bridge::OnOutgoingPacket(Player* receiver, const WorldPacket& packet)
                 data["quest_id"] = questId;
                 AddQuestName(data, questId);
                 Emit(EV_QUEST_UPDATE, data);
+                break;
+            }
+
+            case SMSG_WEATHER:
+            {
+                // What the real player's sky is doing. Bots in the zone get the
+                // same packet; the player's own is the one that counts.
+                if (receiver->GetPlayerbotAI() && !receiver->GetPlayerbotAI()->IsRealPlayer())
+                    break;
+                WorldPacket p(packet);
+                p.rpos(0);
+                uint32 kind;
+                float grade;
+                p >> kind >> grade;
+                Json data;
+                data["player"] = PlayerRef(receiver);
+                data["type"] = WeatherName(kind);
+                data["grade"] = std::round(grade * 100.0f) / 100.0f;
+                AddZone(receiver, data);
+                {
+                    std::lock_guard<std::mutex> lock(weatherMutex_);
+                    Json& last = weather_[receiver->GetObjectGuid()];
+                    if (!last.is_null() && last["type"] == data["type"] && last["grade"] == data["grade"] && last["zone"] == data["zone"])
+                        break;
+                    last = Json{{"type", data["type"]}, {"grade", data["grade"]}, {"zone", data["zone"]}};
+                }
+                Emit(EV_WEATHER, data);
                 break;
             }
 
