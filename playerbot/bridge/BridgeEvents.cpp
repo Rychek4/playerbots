@@ -21,6 +21,7 @@
 #include "Grids/GridNotifiersImpl.h"
 #include "Groups/Group.h"
 #include "Log/Log.h"
+#include "Loot/LootMgr.h"
 #include "Server/DBCStores.h"
 #include "Entities/Bag.h"
 #include "Entities/Pet.h"
@@ -82,6 +83,43 @@ namespace
             default:
                 return false;
         }
+    }
+
+    // A creature's rank as the game names it (CreatureInfo::Rank).
+    const char* RankName(uint32 rank)
+    {
+        switch (rank)
+        {
+            case CREATURE_ELITE_ELITE:     return "elite";
+            case CREATURE_ELITE_RAREELITE: return "rare elite";
+            case CREATURE_ELITE_WORLDBOSS: return "boss";
+            case CREATURE_ELITE_RARE:      return "rare";
+            default:                       return "normal";
+        }
+    }
+
+    // Whether killing this creature does the player's work: a kill one of
+    // their quests still needs, or loot one still needs (the core's own
+    // check, the one that decides whether the item drops for them). Exact,
+    // by entry and loot table: never by name.
+    bool QuestTarget(Player* player, Creature* creature)
+    {
+        CreatureInfo const* info = creature->GetCreatureInfo();
+        if (!info)
+            return false;
+        for (auto const& [questId, data] : player->getQuestStatusMap())
+        {
+            if (data.m_rewarded || data.m_status != QUEST_STATUS_INCOMPLETE)
+                continue;
+            Quest const* quest = sObjectMgr.GetQuestTemplate(questId);
+            if (!quest)
+                continue;
+            for (int i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
+                if (quest->ReqCreatureOrGOId[i] == int32(info->Entry) && quest->ReqCreatureOrGOCount[i]
+                        && data.m_creatureOrGOcount[i] < quest->ReqCreatureOrGOCount[i])
+                    return true;
+        }
+        return info->LootId && LootTemplates_Creature.HaveQuestLootForPlayer(info->LootId, player);
     }
 
     void AddQuestName(Json& out, uint32 questId)
@@ -198,6 +236,7 @@ Json Bridge::UnitRef(Unit* unit)
             if (info->SubName && *info->SubName)
                 ref["sub_name"] = info->SubName;
             ref["creature_type"] = info->CreatureType;
+            ref["rank"] = RankName(info->Rank);
         }
     }
     return ref;
@@ -371,6 +410,7 @@ Json Bridge::NearbyUnit(Player* center, Unit* unit)
         if (flags & UNIT_NPC_FLAG_REPAIR)       services.push_back("repair");
         if (flags & UNIT_NPC_FLAG_BATTLEMASTER) services.push_back("battlemaster");
         entry["npc_flags"] = services;
+        entry["quest_target"] = QuestTarget(center, static_cast<Creature*>(unit));
     }
     return entry;
 }
