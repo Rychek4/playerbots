@@ -68,6 +68,7 @@ namespace BridgeProtocol
     constexpr char EV_BOT_ACTIVITY[] = "bot.activity";
     constexpr char EV_WEATHER[] = "weather";
     constexpr char EV_QUEST_PROGRESS[] = "quest.progress";
+    constexpr char EV_STANDING_CHANGED[] = "standing.changed";
 
     constexpr uint32 DUPLICATE_WINDOW_MS = 2000;
 }
@@ -147,6 +148,8 @@ private:
         ObjectGuid rpgTarget;      // the NPC the companion was heading for, as announced
         std::string travel;        // where the companion was travelling, as announced
         uint32 activityAt = 0;     // ms clock of the last bot.activity, for the throttle
+        std::map<uint32, uint32> standings;   // faction id -> rank (ReputationRank), as last announced
+        bool standingsRead = false;           // the first read is a baseline, not an event
     };
 
     // Dispatch and replies
@@ -162,6 +165,7 @@ private:
     void Watch();                       // every world tick: transitions of everyone in a real player's party
     void WatchMember(Player* player);
     void WatchZone(Player* player);
+    void WatchStanding(Player* player); // every bubble interval: a rank changing with a faction
     void WatchGroup(Player* real);
     bool Announces(Player* bot) const;  // is this bot's coming and going any business of a client's?
     void EmitBotLogin(Player* bot);     // the bot.login event proper, once the bot is really in the world
