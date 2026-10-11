@@ -167,6 +167,15 @@ Creature* Bridge::FindCreature(const Json& args)
     throw BridgeCommandError("creature not found on any real player's map; pass 'map'");
 }
 
+// A creature's kind as the game names it (CreatureInfo::CreatureType): npc.about
+// says it, and the set pieces' catalog (BridgeSetPieces.cpp).
+const char* Bridge::TypeName(uint32 type)
+{
+    static const char* kTypes[] = {"", "beast", "dragonkin", "demon", "elemental", "giant", "undead", "humanoid",
+                                   "critter", "mechanical", "not specified", "totem"};
+    return type < sizeof(kTypes) / sizeof(kTypes[0]) ? kTypes[type] : "";
+}
+
 // Handlers ---------------------------------------------------------------------
 
 std::optional<Json> Bridge::CmdBotList(const BridgeInbound&, const Json&)
@@ -936,10 +945,7 @@ std::optional<Json> Bridge::CmdNpcAbout(const BridgeInbound&, const Json& args)
     result["guard"] = creature->IsGuard();
     result["civilian"] = info ? (info->ExtraFlags & CREATURE_EXTRA_FLAG_CIVILIAN) != 0 : false;
     result["rank"] = info ? info->Rank : 0u;
-    static const char* kTypes[] = {"", "beast", "dragonkin", "demon", "elemental", "giant", "undead", "humanoid",
-                                   "critter", "mechanical", "not specified", "totem"};
-    const uint32 type = info ? info->CreatureType : 0u;
-    result["creature_type"] = type < sizeof(kTypes) / sizeof(kTypes[0]) ? kTypes[type] : "";
+    result["creature_type"] = TypeName(info ? info->CreatureType : 0u);
 
     std::string factionName;
     if (FactionTemplateEntry const* ft = sFactionTemplateStore.LookupEntry(creature->GetFaction()))
@@ -1220,28 +1226,14 @@ namespace
 // it is, where it stands. Which way and how far, in the player's own frame,
 // is the narrator's arithmetic; the words are the model's.
 
-std::optional<Json> Bridge::CmdWorldPlaces(const BridgeInbound&, const Json& args)
+// The areas: one entry per area the game names, at the point of it nearest
+// the player, with its distance. The table is the module's and may not be
+// loaded (no travel data): then there are no areas to name, not an error.
+// world.places and the set pieces' catalog (world.catalog) both name them.
+std::vector<std::pair<float, Json>> Bridge::AreasNear(Player* player, float radius)
 {
-    const std::string name = OptionalString(args, "player");
-    Player* player = nullptr;
-    if (!name.empty())
-        player = RequireOnlinePlayer(name, "player");
-    else
-    {
-        std::vector<Player*> reals = RealPlayersOnline();
-        if (reals.empty())
-            throw BridgeCommandError("no real player is online; pass 'player'");
-        player = reals.front();
-    }
-    const float radius = float(OptionalNumber(args, "radius", 600.0));
-    const size_t limit = size_t(OptionalNumber(args, "limit", 24.0));
     const WorldPosition here(player);
-
     std::vector<std::pair<float, Json>> found;
-
-    // The areas: one entry per area the game names, at the point of it
-    // nearest the player. The table is the module's and may not be loaded
-    // (no travel data): then there are no areas to name, not an error.
     try
     {
         for (auto& [areaId, dests] : sTravelMgr.GetExploreLocs())
@@ -1270,6 +1262,27 @@ std::optional<Json> Bridge::CmdWorldPlaces(const BridgeInbound&, const Json& arg
     catch (const std::out_of_range&)
     {
     }
+    return found;
+}
+
+std::optional<Json> Bridge::CmdWorldPlaces(const BridgeInbound&, const Json& args)
+{
+    const std::string name = OptionalString(args, "player");
+    Player* player = nullptr;
+    if (!name.empty())
+        player = RequireOnlinePlayer(name, "player");
+    else
+    {
+        std::vector<Player*> reals = RealPlayersOnline();
+        if (reals.empty())
+            throw BridgeCommandError("no real player is online; pass 'player'");
+        player = reals.front();
+    }
+    const float radius = float(OptionalNumber(args, "radius", 600.0));
+    const size_t limit = size_t(OptionalNumber(args, "limit", 24.0));
+    const WorldPosition here(player);
+
+    std::vector<std::pair<float, Json>> found = AreasNear(player, radius);
 
     // The people a traveller asks after, from the spawn table: one line per
     // creature entry, nearest spawn first, so four guards or two spawns of

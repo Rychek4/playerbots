@@ -35,6 +35,8 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 class Creature;
 class Group;
@@ -68,6 +70,11 @@ namespace BridgeProtocol
     constexpr char EV_BOT_ACTIVITY[] = "bot.activity";
     constexpr char EV_WEATHER[] = "weather";
     constexpr char EV_QUEST_PROGRESS[] = "quest.progress";
+    // A creature npc.summon put in the world, as it goes (BridgeSetPieces.cpp)
+    constexpr char EV_NPC_ARRIVED[] = "npc.arrived";
+    constexpr char EV_NPC_COMBAT[] = "npc.combat";
+    constexpr char EV_NPC_DIED[] = "npc.died";
+    constexpr char EV_NPC_GONE[] = "npc.gone";
 
     constexpr uint32 DUPLICATE_WINDOW_MS = 2000;
 }
@@ -125,6 +132,9 @@ public:
     static Json PartyMember(Player* player);
     static Json QuestLog(Player* player, size_t most);
     static Json NearbyUnit(Player* center, Unit* unit);
+    static const char* RankName(uint32 rank);   // CreatureInfo::Rank as the game names it
+    static const char* TypeName(uint32 type);   // CreatureInfo::CreatureType as the game names it
+    static std::vector<std::pair<float, Json>> AreasNear(Player* player, float radius);   // the named areas round a player, with distances
     Json BuildScene(Player* center);
 
 private:
@@ -147,6 +157,23 @@ private:
         ObjectGuid rpgTarget;      // the NPC the companion was heading for, as announced
         std::string travel;        // where the companion was travelling, as announced
         uint32 activityAt = 0;     // ms clock of the last bot.activity, for the throttle
+    };
+
+    // A creature npc.summon put in the world, watched every world tick until
+    // it is gone (BridgeSetPieces.cpp): the route npc.walk gave it, walked a
+    // point at a time, and what it last announced.
+    struct SummonPoint
+    {
+        float x = 0.0f, y = 0.0f, z = 0.0f;
+    };
+    struct Summon
+    {
+        uint32 map = 0;
+        std::vector<SummonPoint> route;   // the points still to reach, in order
+        bool run = false;
+        uint32 tries = 0;                 // legs issued toward the current point; a point never reached is given up
+        bool alive = true;
+        bool inCombat = false;
     };
 
     // Dispatch and replies
@@ -207,6 +234,14 @@ private:
     std::optional<Json> CmdNpcMove(const BridgeInbound& in, const Json& args);
     // A stranger: who a bot is and what it is about (BridgeCommands.cpp, "Strangers")
     std::optional<Json> CmdBotAbout(const BridgeInbound& in, const Json& args);
+    // Set pieces (BridgeSetPieces.cpp): real creatures summoned, walked and set on each other, and the catalog a script is written from
+    std::optional<Json> CmdNpcSummon(const BridgeInbound& in, const Json& args);
+    std::optional<Json> CmdNpcWalk(const BridgeInbound& in, const Json& args);
+    std::optional<Json> CmdNpcAttack(const BridgeInbound& in, const Json& args);
+    std::optional<Json> CmdNpcDespawn(const BridgeInbound& in, const Json& args);
+    std::optional<Json> CmdNpcFind(const BridgeInbound& in, const Json& args);
+    std::optional<Json> CmdWorldCatalog(const BridgeInbound& in, const Json& args);
+    void WatchSummons();                // every world tick, clients or not: walk each summon on, and announce what became of it
     static void QuestsAt(Player* player, Creature* giver, Json& offered, Json& turnIn, size_t most);
     static uint32 GetOrCreateCastAccount(std::string& error);
     static void RegisterCastAccount(uint32 accountId);
@@ -250,6 +285,7 @@ private:
     std::set<ObjectGuid> requestedLogins_;                                 // bots a client logged in through bot.login; announced even without a master
     std::set<ObjectGuid> pendingOutfits_;                                  // made-to-order bots that still need their level's spells and gear; announced after
     std::map<ObjectGuid, std::pair<ObjectGuid, uint32>> pendingAttach_;    // bot.add on a pool or cast character: bot -> (master, deadline ms)
+    std::map<ObjectGuid, Summon> summons_;                                 // creatures npc.summon put in the world, until they are gone
 };
 
 #define sBridge Bridge::instance()

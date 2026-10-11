@@ -7,6 +7,7 @@
 #include "World/World.h"
 
 #include <chrono>
+#include <ctime>
 
 using namespace BridgeProtocol;
 
@@ -49,6 +50,12 @@ Bridge::Bridge()
     handlers_["npc.face"] = &Bridge::CmdNpcFace;
     handlers_["npc.move"] = &Bridge::CmdNpcMove;
     handlers_["bot.about"] = &Bridge::CmdBotAbout;
+    handlers_["npc.summon"] = &Bridge::CmdNpcSummon;
+    handlers_["npc.walk"] = &Bridge::CmdNpcWalk;
+    handlers_["npc.attack"] = &Bridge::CmdNpcAttack;
+    handlers_["npc.despawn"] = &Bridge::CmdNpcDespawn;
+    handlers_["npc.find"] = &Bridge::CmdNpcFind;
+    handlers_["world.catalog"] = &Bridge::CmdWorldCatalog;
 }
 
 Bridge::~Bridge()
@@ -82,6 +89,11 @@ void Bridge::Start()
     hello["build"] = "cmangos";
 #endif
     hello["realm"] = std::to_string(realmID);
+    // When this server process began listening, in Unix seconds: the same on
+    // every connection until the server restarts. The narrator plays each set
+    // piece once per server start, and this is what tells one start from the
+    // next (the owner restarts the server every play session).
+    hello["started"] = int64(time(nullptr));
 
     const std::string bindIp = sPlayerbotAIConfig.bridgeBindIp.empty() ? std::string("127.0.0.1") : sPlayerbotAIConfig.bridgeBindIp;
     const uint32 maxClients = sPlayerbotAIConfig.bridgeMaxClients > 0 ? uint32(sPlayerbotAIConfig.bridgeMaxClients) : 1u;
@@ -110,6 +122,7 @@ void Bridge::Update(uint32 diff)
         return;
 
     DrainCommands();
+    WatchSummons();   // a summon walks on whether or not anybody is listening
     FlushPendingOutfits();
     FlushPendingAttach();
     FlushPendingLogins();
