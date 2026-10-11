@@ -87,7 +87,7 @@ namespace
         return args[key].get<bool>();
     }
 
-    Json Point(float x, float y, float z)
+    Json PointJson(float x, float y, float z)
     {
         Json pos;
         pos["x"] = x;
@@ -186,7 +186,7 @@ std::optional<Json> Bridge::CmdNpcSummon(const BridgeInbound&, const Json& args)
     Json result;
     result["unit"] = UnitRef(creature);
     result["map"] = map->GetId();
-    result["pos"] = Point(creature->GetPositionX(), creature->GetPositionY(), creature->GetPositionZ());
+    result["pos"] = PointJson(creature->GetPositionX(), creature->GetPositionY(), creature->GetPositionZ());
     result["lifetime"] = lifetime;
     return result;
 }
@@ -330,7 +330,7 @@ std::optional<Json> Bridge::CmdNpcFind(const BridgeInbound&, const Json& args)
         if (units.size() >= std::max(1u, most))
             break;
         Json unit = UnitRef(creature);
-        unit["pos"] = Point(creature->GetPositionX(), creature->GetPositionY(), creature->GetPositionZ());
+        unit["pos"] = PointJson(creature->GetPositionX(), creature->GetPositionY(), creature->GetPositionZ());
         unit["dist"] = dist;
         units.push_back(unit);
     }
@@ -427,7 +427,7 @@ std::optional<Json> Bridge::CmdWorldCatalog(const BridgeInbound&, const Json& ar
         line["hostile"] = hostile(info);
         line["guard"] = (info->ExtraFlags & CREATURE_EXTRA_FLAG_GUARD) != 0;
         line["spawns"] = s.spawns;
-        line["pos"] = Point(s.nearest->posX, s.nearest->posY, s.nearest->posZ);
+        line["pos"] = PointJson(s.nearest->posX, s.nearest->posY, s.nearest->posZ);
         line["area"] = WorldPosition(s.nearest->mapid, s.nearest->posX, s.nearest->posY, s.nearest->posZ).getAreaName(false, false);
         line["dist"] = dist;
         creatures.push_back(line);
@@ -514,7 +514,7 @@ void Bridge::WatchSummons()
                 summon.route.clear();
                 Json data;
                 data["unit"] = UnitRef(creature);
-                data["pos"] = Point(creature->GetPositionX(), creature->GetPositionY(), creature->GetPositionZ());
+                data["pos"] = PointJson(creature->GetPositionX(), creature->GetPositionY(), creature->GetPositionZ());
                 Emit(EV_NPC_DIED, data);
             }
             continue;
@@ -528,7 +528,7 @@ void Bridge::WatchSummons()
             data["unit"] = UnitRef(creature);
             data["fighting"] = fighting;
             data["target"] = UnitRef(creature->GetVictim());
-            data["pos"] = Point(creature->GetPositionX(), creature->GetPositionY(), creature->GetPositionZ());
+            data["pos"] = PointJson(creature->GetPositionX(), creature->GetPositionY(), creature->GetPositionZ());
             Emit(EV_NPC_COMBAT, data);
         }
         if (fighting || summon.route.empty())
@@ -543,7 +543,7 @@ void Bridge::WatchSummons()
             {
                 Json data;
                 data["unit"] = UnitRef(creature);
-                data["pos"] = Point(creature->GetPositionX(), creature->GetPositionY(), creature->GetPositionZ());
+                data["pos"] = PointJson(creature->GetPositionX(), creature->GetPositionY(), creature->GetPositionZ());
                 Emit(EV_NPC_ARRIVED, data);
             }
             continue;   // the next leg goes out on the next tick
