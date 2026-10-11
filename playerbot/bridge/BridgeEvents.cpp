@@ -86,19 +86,6 @@ namespace
         }
     }
 
-    // A creature's rank as the game names it (CreatureInfo::Rank).
-    const char* RankName(uint32 rank)
-    {
-        switch (rank)
-        {
-            case CREATURE_ELITE_ELITE:     return "elite";
-            case CREATURE_ELITE_RAREELITE: return "rare elite";
-            case CREATURE_ELITE_WORLDBOSS: return "boss";
-            case CREATURE_ELITE_RARE:      return "rare";
-            default:                       return "normal";
-        }
-    }
-
     // Whether killing this creature does the player's work: a kill one of
     // their quests still needs, or loot one still needs (the core's own
     // check, the one that decides whether the item drops for them). Exact,
@@ -211,6 +198,20 @@ Json Bridge::PlayerRefByGuid(ObjectGuid guid)
     if (sObjectMgr.GetPlayerNameByGUID(guid, name))
         ref["name"] = name;
     return ref;
+}
+
+// A creature's rank as the game names it (CreatureInfo::Rank). Shared with
+// the set pieces' catalog (BridgeSetPieces.cpp), which names templates.
+const char* Bridge::RankName(uint32 rank)
+{
+    switch (rank)
+    {
+        case CREATURE_ELITE_ELITE:     return "elite";
+        case CREATURE_ELITE_RAREELITE: return "rare elite";
+        case CREATURE_ELITE_WORLDBOSS: return "boss";
+        case CREATURE_ELITE_RARE:      return "rare";
+        default:                       return "normal";
+    }
 }
 
 Json Bridge::UnitRef(Unit* unit)
