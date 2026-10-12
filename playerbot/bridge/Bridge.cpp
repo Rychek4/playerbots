@@ -49,6 +49,8 @@ Bridge::Bridge()
     handlers_["npc.face"] = &Bridge::CmdNpcFace;
     handlers_["npc.move"] = &Bridge::CmdNpcMove;
     handlers_["bot.about"] = &Bridge::CmdBotAbout;
+    handlers_["bot.train"] = &Bridge::CmdBotTrain;
+    handlers_["bot.go"] = &Bridge::CmdBotGo;
 }
 
 Bridge::~Bridge()

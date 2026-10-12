@@ -17,6 +17,7 @@
 #include "playerbot/strategy/Event.h"
 #include "playerbot/TravelMgr.h"
 #include "playerbot/WorldPosition.h"
+#include "playerbot/GuidPosition.h"
 
 #include "Entities/Creature.h"
 #include "Entities/GameObject.h"
@@ -2551,5 +2552,215 @@ std::optional<Json> Bridge::CmdBotAbout(const BridgeInbound&, const Json& args)
         result["dist"] = player->GetDistance(bot);
     else
         result["dist"] = nullptr;
+    return result;
+}
+
+// ---------------------------------------------------------------------------------------------
+// A companion's own class trainer, for an errand (the owner, 12 October:
+// errands send each companion who has something to learn straight to their
+// own class trainer, from anywhere in a city). The nearest spawn on the bot's
+// map, within `radius` yards (600), of a class trainer for the bot's class
+// that is not hostile to it, read from the spawn table as `world.places`
+// reads it; and how many spells the bot could learn there now, as the game
+// shows them green (the walk `npc.about`'s trainer does for a player, without
+// the per-creature conditions, which class trainers do not use).
+//
+// With something to learn, the trainer becomes the bot's rpg target. The
+// module's own errand life then walks it over (`move to rpg target`, which
+// keeps a target up to twice the react distance away and inside the wander
+// leash) and trains it there (`rpg train`, with AutoTrainSpells), as it would
+// a trainer it had found itself: RpgDistance is 80 yards, so on its own it
+// only ever found the ones it happened past. Nothing is learned here, and a
+// bot with nothing to learn is left alone. `go: false` only reports.
+namespace
+{
+    uint32 LearnableFrom(Player* bot, CreatureInfo const* info)
+    {
+        uint32 count = 0;
+        TrainerSpellData const* lists[] = {sObjectMgr.GetNpcTrainerSpells(info->Entry),
+                                           info->TrainerTemplateId ? sObjectMgr.GetNpcTrainerTemplateSpells(info->TrainerTemplateId)
+                                                                   : nullptr};
+        for (TrainerSpellData const* list : lists)
+        {
+            if (!list)
+                continue;
+            for (auto const& entry : list->spellList)
+            {
+                TrainerSpell const* spell = &entry.second;
+                uint32 reqLevel = 0;
+                if (!bot->IsSpellFitByClassAndRace(spell->learnedSpell, &reqLevel))
+                    continue;
+                reqLevel = spell->isProvidedReqLevel ? spell->reqLevel : std::max(reqLevel, spell->reqLevel);
+                if (bot->GetTrainerSpellState(spell, reqLevel) == TRAINER_SPELL_GREEN)
+                    ++count;
+            }
+        }
+        return count;
+    }
+}
+
+std::optional<Json> Bridge::CmdBotTrain(const BridgeInbound&, const Json& args)
+{
+    Player* bot = RequireBot(RequireString(args, "bot"));
+    PlayerbotAI* ai = bot->GetPlayerbotAI();
+    const float radius = float(OptionalNumber(args, "radius", 600.0));
+    const bool go = OptionalBool(args, "go", true);
+    const WorldPosition here(bot);
+    FactionTemplateEntry const* own = bot->GetFactionTemplateEntry();
+
+    CreatureDataPair const* best = nullptr;
+    uint32 bestCount = 0;
+    float bestDist = 0.0f;
+    for (CreatureDataPair const* pair : here.getCreaturesNear(radius))
+    {
+        const CreatureData& data = pair->second;
+        if (data.mapid != here.getMapId())
+            continue;
+        CreatureInfo const* info = ObjectMgr::GetCreatureTemplate(data.id);
+        if (!info || !(info->NpcFlags & UNIT_NPC_FLAG_TRAINER) || info->TrainerType != TRAINER_TYPE_CLASS
+            || info->TrainerClass != bot->getClass())
+            continue;
+        FactionTemplateEntry const* theirs = sFactionTemplateStore.LookupEntry(info->Faction);
+        if (!theirs || (own && theirs->IsHostileTo(*own)))
+            continue;
+        const float dist = here.distance(WorldPosition(data.mapid, data.posX, data.posY, data.posZ));
+        if (best && dist >= bestDist)
+            continue;
+        const uint32 count = LearnableFrom(bot, info);
+        if (!count)
+            continue;
+        best = pair;
+        bestCount = count;
+        bestDist = dist;
+    }
+
+    Json result;
+    result["unit"] = PlayerRef(bot);
+    result["learnable"] = bestCount;
+    result["sent"] = false;
+    if (!best)
+    {
+        result["trainer"] = nullptr;
+        return result;
+    }
+    CreatureInfo const* info = ObjectMgr::GetCreatureTemplate(best->second.id);
+    Json trainer;
+    trainer["name"] = info && info->Name ? std::string(info->Name) : std::string();
+    trainer["dist"] = bestDist;
+    Json pos;
+    pos["x"] = best->second.posX;
+    pos["y"] = best->second.posY;
+    pos["z"] = best->second.posZ;
+    trainer["pos"] = pos;
+    trainer["area"] = WorldPosition(best->second.mapid, best->second.posX, best->second.posY, best->second.posZ)
+                          .getAreaName(false, false);
+    result["trainer"] = trainer;
+
+    if (go && ai)
+    {
+        if (AiObjectContext* context = ai->GetAiObjectContext())
+        {
+            const GuidPosition target(best);
+            auto* value = context->GetValue<GuidPosition>("rpg target");
+            if (value->Get().GetRawValue() != target.GetRawValue())
+                value->Set(target);
+            result["sent"] = true;
+        }
+    }
+    return result;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Send a companion somewhere: to a named NPC (the nearest spawn of that name
+// on its map, within `radius` yards, 1000 by default) or to `x`, `y`, `z`.
+// The owner, 12 October: errands send a companion to its class trainer from
+// anywhere in a city, and next a companion will lead the way to a place
+// while the player follows it (`/follow`), so this is the one way of
+// sending one.
+//
+// The module's own `go npc` has a traveller, and refuses any bot on follow
+// or wander with a master, which is every companion; and an errand target
+// further than twice the react distance (300 yards) is dropped. So the trip
+// is ours: the companion's leash and errands are lifted (follow, wander and
+// rpg off, out of combat), and it runs there on a pathfinding route
+// (MovePoint). Every bubble interval WatchTrips takes the run up again if a
+// fight or the module stopped it, and says `bot.arrived` when it is there,
+// or that it never got there. Putting the companion back in the party's mode
+// is the narrator's, on that event: the bridge knows no modes. `stop: true`
+// calls a trip off.
+std::optional<Json> Bridge::CmdBotGo(const BridgeInbound&, const Json& args)
+{
+    Player* bot = RequireBot(RequireString(args, "bot"));
+    PlayerbotAI* ai = bot->GetPlayerbotAI();
+    if (OptionalBool(args, "stop", false))
+    {
+        // Called off: the narrator put the party in another mode on the way,
+        // and puts the leash back itself. No `bot.arrived` for a called-off trip.
+        Json result;
+        result["unit"] = PlayerRef(bot);
+        result["stopped"] = trips_.erase(bot->GetObjectGuid()) > 0;
+        return result;
+    }
+    const std::string npc = OptionalString(args, "npc");
+    const WorldPosition here(bot);
+    Trip trip;
+    trip.map = bot->GetMapId();
+    if (!npc.empty())
+    {
+        const float radius = float(OptionalNumber(args, "radius", 1000.0));
+        std::string wanted = npc;
+        std::transform(wanted.begin(), wanted.end(), wanted.begin(), ::tolower);
+        CreatureDataPair const* best = nullptr;
+        float bestDist = 0.0f;
+        for (CreatureDataPair const* pair : here.getCreaturesNear(radius))
+        {
+            const CreatureData& data = pair->second;
+            if (data.mapid != here.getMapId())
+                continue;
+            CreatureInfo const* info = ObjectMgr::GetCreatureTemplate(data.id);
+            if (!info || !info->Name)
+                continue;
+            std::string name = info->Name;
+            std::transform(name.begin(), name.end(), name.begin(), ::tolower);
+            if (name != wanted)
+                continue;
+            const float dist = here.distance(WorldPosition(data.mapid, data.posX, data.posY, data.posZ));
+            if (best && dist >= bestDist)
+                continue;
+            best = pair;
+            bestDist = dist;
+        }
+        if (!best)
+            throw BridgeCommandError("nobody called '" + npc + "' within " + std::to_string(int(radius)) + " yards of " + bot->GetName());
+        trip.x = best->second.posX;
+        trip.y = best->second.posY;
+        trip.z = best->second.posZ;
+        trip.to = ObjectMgr::GetCreatureTemplate(best->second.id)->Name;
+    }
+    else
+    {
+        trip.x = float(RequireNumber(args, "x"));
+        trip.y = float(RequireNumber(args, "y"));
+        trip.z = float(OptionalNumber(args, "z", bot->GetPositionZ()));
+        trip.to = OptionalString(args, "to");
+    }
+
+    if (ai)
+        ai->ChangeStrategy("-follow,-wander,-rpg,-rpg vendor,-rpg maintenance,-stay", BotState::BOT_STATE_NON_COMBAT);
+    bot->GetMotionMaster()->MovePoint(0, ::Position(trip.x, trip.y, trip.z, 0.0f), FORCED_MOVEMENT_RUN);
+    trips_[bot->GetObjectGuid()] = trip;
+
+    Json result;
+    result["unit"] = PlayerRef(bot);
+    Json to;
+    to["name"] = trip.to;
+    Json pos;
+    pos["x"] = trip.x;
+    pos["y"] = trip.y;
+    pos["z"] = trip.z;
+    to["pos"] = pos;
+    to["dist"] = bot->GetDistance(trip.x, trip.y, trip.z);
+    result["to"] = to;
+    result["going"] = true;
     return result;
 }

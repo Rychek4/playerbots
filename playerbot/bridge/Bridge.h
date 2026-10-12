@@ -69,6 +69,8 @@ namespace BridgeProtocol
     constexpr char EV_WEATHER[] = "weather";
     constexpr char EV_QUEST_PROGRESS[] = "quest.progress";
     constexpr char EV_STANDING_CHANGED[] = "standing.changed";
+    constexpr char EV_RELEASED[] = "released";
+    constexpr char EV_BOT_ARRIVED[] = "bot.arrived";
 
     constexpr uint32 DUPLICATE_WINDOW_MS = 2000;
 }
@@ -142,6 +144,7 @@ private:
         uint32 level = 0;
         bool alive = true;
         bool inCombat = false;
+        bool ghost = false;        // released: a spirit on the way back to the body
         bool moving = false;       // real players only: the last movement state announced
         uint32 stillSince = 0;     // ms clock when the player last came to rest, 0 while moving
         std::string activity;      // companions only: the module's last executed action, as announced
@@ -166,6 +169,7 @@ private:
     void WatchMember(Player* player);
     void WatchZone(Player* player);
     void WatchStanding(Player* player); // every bubble interval: a rank changing with a faction
+    void WatchTrips();                  // every bubble interval: companions sent somewhere by bot.go
     void WatchGroup(Player* real);
     bool Announces(Player* bot) const;  // is this bot's coming and going any business of a client's?
     void EmitBotLogin(Player* bot);     // the bot.login event proper, once the bot is really in the world
@@ -211,6 +215,19 @@ private:
     std::optional<Json> CmdNpcMove(const BridgeInbound& in, const Json& args);
     // A stranger: who a bot is and what it is about (BridgeCommands.cpp, "Strangers")
     std::optional<Json> CmdBotAbout(const BridgeInbound& in, const Json& args);
+    std::optional<Json> CmdBotTrain(const BridgeInbound& in, const Json& args);
+    std::optional<Json> CmdBotGo(const BridgeInbound& in, const Json& args);
+
+    // A companion sent somewhere by bot.go: where to, and how often the walk
+    // has been taken up again after something stopped it.
+    struct Trip
+    {
+        uint32 map = 0;
+        float x = 0.0f, y = 0.0f, z = 0.0f;
+        std::string to;
+        uint32 retries = 0;
+    };
+    std::map<ObjectGuid, Trip> trips_;
     static void QuestsAt(Player* player, Creature* giver, Json& offered, Json& turnIn, size_t most);
     static uint32 GetOrCreateCastAccount(std::string& error);
     static void RegisterCastAccount(uint32 accountId);
