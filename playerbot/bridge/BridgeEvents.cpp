@@ -99,6 +99,33 @@ namespace
         }
     }
 
+    // A standing as the game names its ranks (ReputationRank, Hated to Exalted).
+    const char* StandingName(uint32 rank)
+    {
+        static const char* kRanks[] = {"hated", "hostile", "unfriendly", "neutral", "friendly", "honored", "revered",
+                                       "exalted"};
+        return rank < sizeof(kRanks) / sizeof(kRanks[0]) ? kRanks[rank] : "neutral";
+    }
+
+    // The factions a character's reputation pane shows, each with its rank:
+    // visible, and neither hidden nor forced out of the list (the other
+    // side's cities). The rest are the game's bookkeeping.
+    template <typename Fn>
+    void ForEachStanding(Player* player, Fn fn)
+    {
+        ReputationMgr const& reps = player->GetReputationMgr();
+        for (auto const& entry : reps.GetStateList())
+        {
+            FactionState const& state = entry.second;
+            if (!(state.Flags & FACTION_FLAG_VISIBLE) || (state.Flags & (FACTION_FLAG_HIDDEN | FACTION_FLAG_INVISIBLE_FORCED)))
+                continue;
+            FactionEntry const* faction = sFactionStore.LookupEntry(state.ID);
+            if (!faction || !faction->name[0] || !faction->name[0][0])
+                continue;
+            fn(faction, uint32(reps.GetRank(faction)));
+        }
+    }
+
     // Whether killing this creature does the player's work: a kill one of
     // their quests still needs, or loot one still needs (the core's own
     // check, the one that decides whether the item drops for them). Exact,
@@ -301,6 +328,18 @@ Json Bridge::PartyMember(Player* player)
     // it: the narrator's page does not speak of the weather in there.
     member["indoors"] = !player->GetTerrain()->IsOutdoors(player->GetPositionX(), player->GetPositionY(),
                                                           player->GetPositionZ());
+    // Where they stand with each faction their reputation pane shows, by the
+    // game's rank names (the owner, 11 October: the narrator words each rank
+    // its own way, and the companions know their own rise in the cities).
+    Json standings = Json::array();
+    ForEachStanding(player, [&standings](FactionEntry const* faction, uint32 rank)
+    {
+        Json standing;
+        standing["faction"] = std::string(faction->name[0]);
+        standing["rank"] = StandingName(rank);
+        standings.push_back(standing);
+    });
+    member["standings"] = standings;
     const ObjectGuid target = player->GetSelectionGuid();
     member["target"] = target.IsEmpty() ? Json(nullptr) : Json(GuidString(target));
 
@@ -728,6 +767,38 @@ void Bridge::WatchZone(Player* player)
     prev.area = area;
 }
 
+// At the bubble interval: a rank changing with a faction, for anybody in a
+// real player's party (Friendly to Honored with Stormwind). Read off the
+// reputation the core keeps; a faction coming into the pane for the first
+// time is a baseline, not a change.
+void Bridge::WatchStanding(Player* player)
+{
+    auto it = tracked_.find(player->GetObjectGuid());
+    if (it == tracked_.end())
+        return;                                            // WatchMember lays the baseline first
+    UnitState& prev = it->second;
+    std::map<uint32, uint32> now;
+    ForEachStanding(player, [&now](FactionEntry const* faction, uint32 rank) { now[faction->ID] = rank; });
+    if (prev.standingsRead)
+    {
+        for (auto const& entry : now)
+        {
+            auto was = prev.standings.find(entry.first);
+            if (was == prev.standings.end() || was->second == entry.second)
+                continue;
+            FactionEntry const* faction = sFactionStore.LookupEntry(entry.first);
+            Json data;
+            data["unit"] = PlayerRef(player);
+            data["faction"] = std::string(faction->name[0]);
+            data["rank"] = StandingName(entry.second);
+            data["from"] = StandingName(was->second);
+            Emit(EV_STANDING_CHANGED, data);
+        }
+    }
+    prev.standings = std::move(now);
+    prev.standingsRead = true;
+}
+
 void Bridge::WatchGroup(Player* real)
 {
     uint64 signature = 0;
@@ -773,7 +844,10 @@ void Bridge::BubbleScan()
     std::vector<Player*> reals;
     std::vector<Player*> members = TrackedParty(&reals);
     for (Player* member : members)
+    {
         WatchZone(member);
+        WatchStanding(member);
+    }
 
     const float radius = sPlayerbotAIConfig.bridgeSceneRadius > 0.0f ? sPlayerbotAIConfig.bridgeSceneRadius : 40.0f;
     for (Player* real : reals)
