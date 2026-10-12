@@ -307,6 +307,10 @@ Json Bridge::PartyMember(Player* player)
     member["power_type"] = int32(power);
     member["power_pct"] = maxPower ? int32(player->GetPower(power) * 100 / maxPower) : 0;
     member["alive"] = player->IsAlive();
+    // Released: a spirit on the way back to the body, not a body where it fell
+    // (the owner, 12 October: the narrator knows who is down and who is
+    // running back, and nobody lying dead talks).
+    member["ghost"] = player->HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_GHOST);
     member["in_combat"] = player->IsInCombat();
     // Riding or on foot, as the game has it: the narrator's page says so,
     // so the companions do not talk of horses nobody has (the owner, 10
@@ -607,6 +611,7 @@ void Bridge::WatchMember(Player* player)
         first.level = player->GetLevel();
         first.alive = player->IsAlive();
         first.inCombat = player->IsInCombat();
+        first.ghost = player->HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_GHOST);
         tracked_[player->GetObjectGuid()] = first;
         return;
     }
@@ -633,6 +638,19 @@ void Bridge::WatchMember(Player* player)
         Emit(alive ? EV_RESURRECT : EV_DEATH, data);
         prev.alive = alive;
     }
+
+    // Released: the body left where it fell and the spirit at the graveyard.
+    // Resurrection is `resurrect` above; this is only the release.
+    const bool ghost = player->HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_GHOST);
+    if (ghost && !prev.ghost)
+    {
+        Json data;
+        data["unit"] = PlayerRef(player);
+        data["pos"] = Position(player);
+        AddZone(player, data);
+        Emit(EV_RELEASED, data);
+    }
+    prev.ghost = ghost;
 
     const bool inCombat = player->IsInCombat();
     if (inCombat != prev.inCombat)
@@ -799,6 +817,56 @@ void Bridge::WatchStanding(Player* player)
     prev.standingsRead = true;
 }
 
+// At the bubble interval: each companion sent somewhere by bot.go. Arrived
+// (within a few yards of the spot) is `bot.arrived` with `reached` true; dead,
+// gone from the world, on another map, or stopped short too many times is
+// `bot.arrived` with `reached` false. A walk something interrupted (a fight,
+// the module's own loot) is taken up again when the companion stands still
+// and is out of combat. The leash is not put back here: the narrator puts
+// the companion back in the party's mode when it hears the event.
+void Bridge::WatchTrips()
+{
+    constexpr float ARRIVED_YARDS = 5.0f;
+    constexpr uint32 MOST_RETRIES = 30;
+    for (auto it = trips_.begin(); it != trips_.end();)
+    {
+        Player* bot = ObjectAccessor::FindPlayer(it->first);
+        Trip& trip = it->second;
+        bool done = false;
+        bool reached = false;
+        if (!bot || !bot->IsInWorld() || !bot->IsAlive() || bot->GetMapId() != trip.map)
+            done = true;
+        else if (bot->GetDistance(trip.x, trip.y, trip.z) <= ARRIVED_YARDS)
+            done = reached = true;
+        else if (!bot->IsMoving() && !bot->IsInCombat())
+        {
+            if (++trip.retries > MOST_RETRIES)
+                done = true;
+            else
+                bot->GetMotionMaster()->MovePoint(0, ::Position(trip.x, trip.y, trip.z, 0.0f), FORCED_MOVEMENT_RUN);
+        }
+        if (!done)
+        {
+            ++it;
+            continue;
+        }
+        if (bot)
+        {
+            Json data;
+            data["unit"] = PlayerRef(bot);
+            data["to"] = trip.to;
+            data["reached"] = reached;
+            Json pos;
+            pos["x"] = trip.x;
+            pos["y"] = trip.y;
+            pos["z"] = trip.z;
+            data["pos"] = pos;
+            Emit(EV_BOT_ARRIVED, data);
+        }
+        it = trips_.erase(it);
+    }
+}
+
 void Bridge::WatchGroup(Player* real)
 {
     uint64 signature = 0;
@@ -848,6 +916,7 @@ void Bridge::BubbleScan()
         WatchZone(member);
         WatchStanding(member);
     }
+    WatchTrips();
 
     const float radius = sPlayerbotAIConfig.bridgeSceneRadius > 0.0f ? sPlayerbotAIConfig.bridgeSceneRadius : 40.0f;
     for (Player* real : reals)
