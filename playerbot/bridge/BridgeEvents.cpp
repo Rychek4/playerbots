@@ -852,6 +852,7 @@ void Bridge::WatchTrips()
         }
         if (bot)
         {
+            EndTrip(bot, trip);
             Json data;
             data["unit"] = PlayerRef(bot);
             data["to"] = trip.to;
