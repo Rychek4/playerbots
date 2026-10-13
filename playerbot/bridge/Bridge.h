@@ -226,8 +226,10 @@ private:
         float x = 0.0f, y = 0.0f, z = 0.0f;
         std::string to;
         uint32 retries = 0;
+        std::vector<std::string> lifted;   // the strategies taken off for the trip, put back at its end
     };
     std::map<ObjectGuid, Trip> trips_;
+    static void EndTrip(Player* bot, Trip const& trip);
     static void QuestsAt(Player* player, Creature* giver, Json& offered, Json& turnIn, size_t most);
     static uint32 GetOrCreateCastAccount(std::string& error);
     static void RegisterCastAccount(uint32 accountId);

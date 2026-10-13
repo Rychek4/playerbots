@@ -2574,6 +2574,8 @@ std::optional<Json> Bridge::CmdBotAbout(const BridgeInbound&, const Json& args)
 // bot with nothing to learn is left alone. `go: false` only reports.
 namespace
 {
+    constexpr float TRAIN_YARDS = 10.0f;   // close enough to train at once (bot.go arrives within five)
+
     uint32 LearnableFrom(Player* bot, CreatureInfo const* info)
     {
         uint32 count = 0;
@@ -2658,9 +2660,23 @@ std::optional<Json> Bridge::CmdBotTrain(const BridgeInbound&, const Json& args)
 
     if (go && ai)
     {
-        if (AiObjectContext* context = ai->GetAiObjectContext())
+        const GuidPosition target(best);
+        Creature* there = bot->GetMap()->GetCreature(target);
+        if (there && there->IsAlive() && bot->IsWithinDistInMap(there, TRAIN_YARDS))
         {
-            const GuidPosition target(best);
+            // Standing at the trainer: trained now, by the module's own
+            // trainer action as its errands would (price, money, the spells
+            // it learns), not left to the errands to pick again. On 12
+            // October Felindy reached Brother Benjamin and her errands chose
+            // to go fishing instead. `learned` is how many it took; any left
+            // over it could not pay for.
+            ai->DoSpecificAction("trainer", Event("rpg action", there->GetObjectGuid(), ai->GetMaster()), true);
+            const uint32 left = LearnableFrom(bot, info);
+            result["learned"] = bestCount > left ? bestCount - left : 0;
+            result["learnable"] = left;
+        }
+        else if (AiObjectContext* context = ai->GetAiObjectContext())
+        {
             auto* value = context->GetValue<GuidPosition>("rpg target");
             if (value->Get().GetRawValue() != target.GetRawValue())
                 value->Set(target);
@@ -2688,6 +2704,17 @@ std::optional<Json> Bridge::CmdBotTrain(const BridgeInbound&, const Json& args)
 // or that it never got there. Putting the companion back in the party's mode
 // is the narrator's, on that event: the bridge knows no modes. `stop: true`
 // calls a trip off.
+void Bridge::EndTrip(Player* bot, Trip const& trip)
+{
+    PlayerbotAI* ai = bot ? bot->GetPlayerbotAI() : nullptr;
+    if (!ai || trip.lifted.empty())
+        return;
+    std::string change;
+    for (std::string const& name : trip.lifted)
+        change += (change.empty() ? "+" : ",+") + name;
+    ai->ChangeStrategy(change, BotState::BOT_STATE_NON_COMBAT);
+}
+
 std::optional<Json> Bridge::CmdBotGo(const BridgeInbound&, const Json& args)
 {
     Player* bot = RequireBot(RequireString(args, "bot"));
@@ -2698,7 +2725,13 @@ std::optional<Json> Bridge::CmdBotGo(const BridgeInbound&, const Json& args)
         // and puts the leash back itself. No `bot.arrived` for a called-off trip.
         Json result;
         result["unit"] = PlayerRef(bot);
-        result["stopped"] = trips_.erase(bot->GetObjectGuid()) > 0;
+        auto trip = trips_.find(bot->GetObjectGuid());
+        result["stopped"] = trip != trips_.end();
+        if (trip != trips_.end())
+        {
+            EndTrip(bot, trip->second);
+            trips_.erase(trip);
+        }
         return result;
     }
     const std::string npc = OptionalString(args, "npc");
@@ -2745,8 +2778,28 @@ std::optional<Json> Bridge::CmdBotGo(const BridgeInbound&, const Json& args)
         trip.to = OptionalString(args, "to");
     }
 
-    if (ai)
-        ai->ChangeStrategy("-follow,-wander,-rpg,-rpg vendor,-rpg maintenance,-stay", BotState::BOT_STATE_NON_COMBAT);
+    // Everything that moves a companion on its own is lifted for the trip:
+    // the leash, the errands, standing still, and the module's own travel
+    // and grinding, which chose a trainer of their own for Polai on 12
+    // October and walked him there instead (he never arrived). Only what the
+    // bot had is lifted, and EndTrip puts back exactly that. Sent again while
+    // on a trip, the first trip's list stands.
+    static const char* const MOVERS[] = {"follow", "wander", "rpg", "rpg vendor", "rpg maintenance", "stay",
+                                         "travel", "grind"};
+    auto onTrip = trips_.find(bot->GetObjectGuid());
+    if (onTrip != trips_.end())
+        trip.lifted = onTrip->second.lifted;
+    else if (ai)
+        for (const char* name : MOVERS)
+            if (ai->HasStrategy(name, BotState::BOT_STATE_NON_COMBAT))
+                trip.lifted.push_back(name);
+    if (ai && !trip.lifted.empty())
+    {
+        std::string change;
+        for (std::string const& name : trip.lifted)
+            change += (change.empty() ? "-" : ",-") + name;
+        ai->ChangeStrategy(change, BotState::BOT_STATE_NON_COMBAT);
+    }
     bot->GetMotionMaster()->MovePoint(0, ::Position(trip.x, trip.y, trip.z, 0.0f), FORCED_MOVEMENT_RUN);
     trips_[bot->GetObjectGuid()] = trip;
 
