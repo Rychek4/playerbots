@@ -19,13 +19,24 @@ namespace ai
             ObjectGuid playerGuid;
             p >> playerGuid;
 
+            // A companion (a bot with a real player for a master) is never drawn
+            // into a duel by another bot. Free bots with the "start duel" strategy
+            // challenge whoever is in reach, and on 13 October Felindy, a level 10
+            // priest at her master's heel, spent two minutes duelling a level 18
+            // druid the party had just been admiring. Her master's challenge, or
+            // another real player's, is still taken on the terms below.
+            Player* challenger = sObjectMgr.GetPlayer(playerGuid);
+            const bool fromBot = challenger && challenger->GetPlayerbotAI() && !challenger->GetPlayerbotAI()->IsRealPlayer();
+
             // do not auto duel with low hp or below certain level
             if (bot->GetLevel() < sPlayerbotAIConfig.botAcceptDuelMinimumLevel
+                || (ai->HasRealPlayerMaster() && fromBot)
                 || ((!ai->HasRealPlayerMaster() || (ai->GetMaster() && ai->GetMaster()->GetObjectGuid() != playerGuid)) && AI_VALUE2(uint8, "health", "self target") < 90))
             {
                 WorldPacket packet(CMSG_DUEL_CANCELLED, 8);
                 packet << flagGuid;
                 bot->GetSession()->HandleDuelCancelledOpcode(packet);
+                return true;    // declined: the accept below used to follow, and the server dropped it (the duel was gone)
             }
 
             WorldPacket packet(CMSG_DUEL_ACCEPTED, 8);
@@ -42,6 +53,7 @@ namespace ai
         {
             return "This action accepts or declines duel invitations based on conditions.\n"
                 "The bot will decline if below minimum level or low health (unless from master).\n"
+                "A bot with a real player for a master declines every duel another bot offers.\n"
                 "After accepting, combat strategies are reset for the duel.";
         }
         virtual std::vector<std::string> GetUsedActions() { return {}; }
