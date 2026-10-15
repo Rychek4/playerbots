@@ -286,6 +286,7 @@ bool PlayerbotAIConfig::Initialize()
     bridgeCastAccountPrefix = config.GetStringDefault("AiPlayerbot.Bridge.CastAccountPrefix", "castbot");
     // Only with the bridge on: the narrator is who speaks for bots then.
     bridgeQuietBots = bridgePort > 0 && config.GetBoolDefault("AiPlayerbot.Bridge.QuietBots", true);
+    bridgeWalkRest = config.GetFloatDefault("AiPlayerbot.Bridge.WalkRest", 20.0f);
 
     perfMonEnabled = config.GetBoolDefault("AiPlayerbot.PerfMonEnabled", false);
     bExplicitDbStoreSave = config.GetBoolDefault("AiPlayerbot.ExplicitDbStoreSave", false);
