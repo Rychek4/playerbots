@@ -86,19 +86,6 @@ namespace
         }
     }
 
-    // A creature's rank as the game names it (CreatureInfo::Rank).
-    const char* RankName(uint32 rank)
-    {
-        switch (rank)
-        {
-            case CREATURE_ELITE_ELITE:     return "elite";
-            case CREATURE_ELITE_RAREELITE: return "rare elite";
-            case CREATURE_ELITE_WORLDBOSS: return "boss";
-            case CREATURE_ELITE_RARE:      return "rare";
-            default:                       return "normal";
-        }
-    }
-
     // A standing as the game names its ranks (ReputationRank, Hated to Exalted).
     const char* StandingName(uint32 rank)
     {
@@ -238,6 +225,21 @@ Json Bridge::PlayerRefByGuid(ObjectGuid guid)
     if (sObjectMgr.GetPlayerNameByGUID(guid, name))
         ref["name"] = name;
     return ref;
+}
+
+// A creature's rank as the game names it (CreatureInfo::Rank). A Bridge
+// static since set pieces (BridgeSetPieces.cpp) name ranks in a zone's
+// catalog too: one table for both.
+const char* Bridge::RankName(uint32 rank)
+{
+    switch (rank)
+    {
+        case CREATURE_ELITE_ELITE:     return "elite";
+        case CREATURE_ELITE_RAREELITE: return "rare elite";
+        case CREATURE_ELITE_WORLDBOSS: return "boss";
+        case CREATURE_ELITE_RARE:      return "rare";
+        default:                       return "normal";
+    }
 }
 
 Json Bridge::UnitRef(Unit* unit)
@@ -918,6 +920,7 @@ void Bridge::BubbleScan()
         WatchStanding(member);
     }
     WatchTrips();
+    WatchSummons();
 
     const float radius = sPlayerbotAIConfig.bridgeSceneRadius > 0.0f ? sPlayerbotAIConfig.bridgeSceneRadius : 40.0f;
     for (Player* real : reals)
