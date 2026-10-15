@@ -998,6 +998,12 @@ AiPlayerbot.UseKnockback = 1
 # switch, because a bot's saved strategies outlive the per-feature switches. 0 - the
 # module's own chatter as usual. Ignored when the bridge is off.
 #AiPlayerbot.Bridge.QuietBots = 1
+# Walking rest: to encourage walking over running, a real player accrues rested XP, as at
+# an inn, while standing or moving in walk mode (the walk toggle), unmounted and not on a
+# flight, fighting or not. Running pays nothing, and where an inn already pays this stands
+# aside. The rate is the inn's times this number: at 20, a bubble (5% of a level) per 24
+# minutes of walking. 0 - off. Only with the bridge on.
+#AiPlayerbot.Bridge.WalkRest = 20
 
 AiPlayerbot.PerfMonEnabled = 0
 

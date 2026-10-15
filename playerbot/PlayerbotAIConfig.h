@@ -412,6 +412,9 @@ public:
     // The narrator speaks for bots: on (with the bridge on), a bot never
     // talks, emotes or greets on its own (PlayerbotAI::Hushed).
     bool bridgeQuietBots;
+    // Walking rest: the real player accrues rested XP while walking or
+    // standing, at the inn's rate times this number (0 off; Bridge::WatchMember).
+    float bridgeWalkRest;
 
     bool perfMonEnabled;
     bool bExplicitDbStoreSave = false;

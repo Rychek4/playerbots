@@ -708,6 +708,32 @@ void Bridge::WatchMember(Player* player)
                 Emit(EV_MOVEMENT, data);
             }
         }
+
+        // Walking rest (the owner, 15 October): to encourage walking over
+        // running, the real player accrues rested XP, as at an inn, while
+        // standing or moving in walk mode, unmounted and not on a flight,
+        // fighting or not. Running pays nothing. Paid through the server's
+        // own rest, so the rested bar fills, the rested state shows and it
+        // saves with the character; where an inn already pays (the resting
+        // flag) this stands aside. The rate is the inn's times
+        // AiPlayerbot.Bridge.WalkRest (0 off): at 20, a bubble (5% of a
+        // level) per 24 minutes of walking. Paid once a second, for the
+        // seconds that passed, so the ticks' remainders are not lost.
+        const float walkRest = sPlayerbotAIConfig.bridgeWalkRest;
+        if (walkRest > 0.0f)
+        {
+            if (prev.restTick == 0)
+                prev.restTick = now;
+            const uint32 elapsed = WorldTimer::getMSTimeDiff(prev.restTick, now);
+            if (elapsed >= 1000)
+            {
+                prev.restTick = now;
+                const bool walkingOrStill = !player->IsMoving() || player->IsWalking();
+                if (player->IsAlive() && walkingOrStill && !player->IsMounted() && !player->IsTaxiFlying()
+                    && !player->HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_RESTING))
+                    player->SetRestBonus(player->GetRestBonus() + player->ComputeRest(1) * (elapsed / 1000.0f) * walkRest);
+            }
+        }
     }
     // What a companion is doing, for the control center to put in words: the
     // module's own last executed action, the NPC it is heading for, and where

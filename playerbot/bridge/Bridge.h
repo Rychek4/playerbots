@@ -147,6 +147,7 @@ private:
         bool ghost = false;        // released: a spirit on the way back to the body
         bool moving = false;       // real players only: the last movement state announced
         uint32 stillSince = 0;     // ms clock when the player last came to rest, 0 while moving
+        uint32 restTick = 0;       // real players only: ms clock when walking rest was last paid
         std::string activity;      // companions only: the module's last executed action, as announced
         ObjectGuid rpgTarget;      // the NPC the companion was heading for, as announced
         std::string travel;        // where the companion was travelling, as announced
