@@ -41,6 +41,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <map>
@@ -1805,6 +1806,28 @@ std::optional<Json> Bridge::CmdWeather(const BridgeInbound&, const Json& args)
     result["type"] = typeName;
     result["grade"] = grade;
     result["permanent"] = permanent;
+    return result;
+}
+
+// sky.set turns the bridge's sky clock (TurnTheSky) to a time of day; the
+// clients follow on the next tick and the cycle runs on from there. A way
+// to see the night without waiting for it. With the day cycle off the sky
+// is the server's clock, and there is nothing here to turn.
+std::optional<Json> Bridge::CmdSkySet(const BridgeInbound&, const Json& args)
+{
+    if (!SkyCycleOn())
+        throw BridgeCommandError("the sky is the server's clock; set AiPlayerbot.Bridge.DayMinutes and NightMinutes for a day of its own");
+    const std::string text = RequireString(args, "time");
+    unsigned hour = 0, minute = 0;
+    char tail = 0;
+    if (std::sscanf(text.c_str(), "%u:%u%c", &hour, &minute, &tail) != 2 || hour > 23 || minute > 59)
+        throw BridgeCommandError("'time' is HH:MM, 00:00 to 23:59");
+    skySeconds_ = hour * 3600.0 + minute * 60.0;
+    skySent_.clear();          // every client gets the new clock on the next tick
+    skyTick_ = 1000;
+    Json result;
+    result["time"] = SkyClock();
+    result["regime"] = SkyRegime() == 2 ? "night" : "day";
     return result;
 }
 

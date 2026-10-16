@@ -178,6 +178,20 @@ private:
     void BubbleScan();                  // every bubble interval: who entered or left each real player's bubble
     void Snapshot();                    // every snapshot interval: reconciliation scenes
     void ForgetTracking();
+
+    // The sky's day (AiPlayerbot.Bridge.DayMinutes and NightMinutes): the
+    // bridge's own game clock, run at one speed through the day and another
+    // through the night, sent to each real player's client as the time
+    // packet the core sends at login. World thread only.
+    void TurnTheSky(uint32 diff);
+    bool SkyCycleOn() const;
+    int SkyRegime() const;                     // 1 by day, 2 by night, by skySeconds_
+    double SkyRate(int regime) const;          // game seconds per real second
+    std::string SkyClock() const;              // HH:MM
+    void SendSky(Player* player, int regime);
+    double skySeconds_ = 8 * 3600.0;           // game seconds since midnight; the server starts at 08:00
+    uint32 skyTick_ = 0;                       // ms since the clients were last checked
+    std::map<ObjectGuid, int> skySent_;        // real player -> the regime their client was last sent
     std::vector<Player*> TrackedParty(std::vector<Player*>* reals = nullptr);
     bool IsDuplicate(const std::string& key);
     void ExpireDuplicates(uint32 now);
@@ -200,6 +214,7 @@ private:
     std::optional<Json> CmdPlayerSay(const BridgeInbound& in, const Json& args);
     std::optional<Json> CmdPlayerEmote(const BridgeInbound& in, const Json& args);
     std::optional<Json> CmdWeather(const BridgeInbound& in, const Json& args);
+    std::optional<Json> CmdSkySet(const BridgeInbound& in, const Json& args);
     // Characters made to order (BridgeCommands.cpp, "Cast characters")
     std::optional<Json> CmdBotCreate(const BridgeInbound& in, const Json& args);
     std::optional<Json> CmdBotDelete(const BridgeInbound& in, const Json& args);

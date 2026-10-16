@@ -415,6 +415,12 @@ public:
     // Walking rest: the real player accrues rested XP while walking or
     // standing, at the inn's rate times this number (0 off; Bridge::WatchMember).
     float bridgeWalkRest;
+    // The sky's day (Bridge::TurnTheSky): with both set, the bridge runs the
+    // clients' clock in a cycle of this many real minutes of day (05:00 to
+    // 22:00 by the game clock) and of night (22:00 to 05:00), and reports
+    // that clock as the scene's game_time. Either 0: the server's clock.
+    int bridgeDayMinutes;
+    int bridgeNightMinutes;
 
     bool perfMonEnabled;
     bool bExplicitDbStoreSave = false;
