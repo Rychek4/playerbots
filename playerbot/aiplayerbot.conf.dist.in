@@ -1004,6 +1004,13 @@ AiPlayerbot.UseKnockback = 1
 # aside. The rate is the inn's times this number: at 20, a bubble (5% of a level) per 24
 # minutes of walking. 0 - off. Only with the bridge on.
 #AiPlayerbot.Bridge.WalkRest = 20
+# The sky's day: a game day of 24 real hours puts night where the server's clock puts it. With
+# both set, the bridge runs the clients' clock in a cycle of this many real minutes of day (05:00
+# to 22:00 by the game clock) and of night (22:00 to 05:00), from 08:00 when the server starts,
+# and the narrator's game_time follows it. The server's own clock is untouched. Either 0 - the
+# client follows the server's clock. Only with the bridge on.
+#AiPlayerbot.Bridge.DayMinutes = 60
+#AiPlayerbot.Bridge.NightMinutes = 45
 
 AiPlayerbot.PerfMonEnabled = 0
 

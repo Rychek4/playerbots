@@ -111,6 +111,7 @@ void Bridge::Update(uint32 diff)
     if (!server_.IsRunning())
         return;
 
+    TurnTheSky(diff);   // the clients' clock, whether or not a narrator is connected
     DrainCommands();
     FlushPendingOutfits();
     FlushPendingAttach();

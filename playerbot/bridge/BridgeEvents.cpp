@@ -485,9 +485,10 @@ Json Bridge::BuildScene(Player* center)
     scene["center"] = GuidString(center->GetObjectGuid());
     AddZone(center, scene);
 
-    // The sky as the player sees it: the game's clock (the server's local
-    // time, which the client's day and night follow) and the weather the
-    // server last sent them, or null before it has.
+    // The sky as the player sees it: the game's clock (the bridge's own when
+    // the day cycle is on, TurnTheSky; else the server's local time, which
+    // the client's day and night then follow) and the weather the server
+    // last sent them, or null before it has.
     const time_t now = sWorld.GetGameTime();
     std::tm local {};
 #ifdef _WIN32
@@ -497,7 +498,7 @@ Json Bridge::BuildScene(Player* center)
 #endif
     char clock[6];
     std::snprintf(clock, sizeof(clock), "%02d:%02d", local.tm_hour, local.tm_min);
-    scene["game_time"] = clock;
+    scene["game_time"] = SkyCycleOn() ? SkyClock() : std::string(clock);
     {
         std::lock_guard<std::mutex> lock(weatherMutex_);
         auto found = weather_.find(center->GetObjectGuid());
@@ -542,6 +543,111 @@ Json Bridge::BuildScene(Player* center)
 }
 
 // Transitions, bubble and reconciliation ------------------------------------------
+
+// The sky's day (the owner, 16 October): a game day of 24 real hours puts
+// night where the server's clock puts it, which is never when the game is
+// played. With AiPlayerbot.Bridge.DayMinutes and NightMinutes set, the
+// bridge keeps a game clock of its own, run at one speed from 05:00 to
+// 22:00 and another from 22:00 to 05:00 (the night window the client's
+// light tables use; Azeroth_Client), from 08:00 when the server starts,
+// and sends it to each real player's client as the packet the core sends
+// at login (SMSG_LOGIN_SETTIMESPEED: the time, and how fast it runs). The
+// client runs its sky from that; the packet goes again when a player
+// appears and whenever the speed changes. The scene's game_time is this
+// clock, so the narrator's sky and the player's agree. The server's own
+// clock is untouched: nothing in the world keeps time by this but the sky.
+namespace
+{
+    const int SKY_NIGHT_START = 22;            // hours, by the game clock
+    const int SKY_NIGHT_END = 5;
+    const double SKY_NIGHT_HOURS = 7.0;
+    const double SKY_DAY_HOURS = 17.0;
+    const double SKY_DAY = 24.0 * 3600.0;
+}
+
+bool Bridge::SkyCycleOn() const
+{
+    return sPlayerbotAIConfig.bridgeDayMinutes > 0 && sPlayerbotAIConfig.bridgeNightMinutes > 0;
+}
+
+int Bridge::SkyRegime() const
+{
+    const int hour = int(skySeconds_ / 3600.0) % 24;
+    return hour >= SKY_NIGHT_START || hour < SKY_NIGHT_END ? 2 : 1;
+}
+
+double Bridge::SkyRate(int regime) const
+{
+    const double minutes = regime == 2 ? sPlayerbotAIConfig.bridgeNightMinutes : sPlayerbotAIConfig.bridgeDayMinutes;
+    const double hours = regime == 2 ? SKY_NIGHT_HOURS : SKY_DAY_HOURS;
+    return hours * 3600.0 / (minutes * 60.0);
+}
+
+std::string Bridge::SkyClock() const
+{
+    char clock[6];
+    std::snprintf(clock, sizeof(clock), "%02d:%02d", int(skySeconds_ / 3600.0) % 24, int(skySeconds_ / 60.0) % 60);
+    return clock;
+}
+
+void Bridge::SendSky(Player* player, int regime)
+{
+    // The core's login packet, with the bridge's hour and minute on today's
+    // date and the speed of the day or night the clock is in. The speed's
+    // unit is the core's: 1/60 is real time, one game minute per real minute.
+    const time_t now = sWorld.GetGameTime();
+    std::tm local {};
+#ifdef _WIN32
+    localtime_s(&local, &now);
+#else
+    localtime_r(&now, &local);
+#endif
+    const uint32 hour = uint32(skySeconds_ / 3600.0) % 24;
+    const uint32 minute = uint32(skySeconds_ / 60.0) % 60;
+    const uint32 bits = uint32(local.tm_year - 100) << 24 | uint32(local.tm_mon) << 20 | uint32(local.tm_mday - 1) << 14
+                        | uint32(local.tm_wday) << 11 | hour << 6 | minute;
+    WorldPacket data(SMSG_LOGIN_SETTIMESPEED, 4 + 4);
+    data << bits;
+    data << float(SkyRate(regime) / 60.0);
+    player->GetSession()->SendPacket(data);
+}
+
+void Bridge::TurnTheSky(uint32 diff)
+{
+    if (!SkyCycleOn())
+    {
+        skySent_.clear();
+        return;
+    }
+    skySeconds_ = std::fmod(skySeconds_ + diff / 1000.0 * SkyRate(SkyRegime()), SKY_DAY);
+    skyTick_ += diff;
+    if (skyTick_ < 1000)
+        return;
+    skyTick_ = 0;
+
+    // Once a second: every real player in the world whose client has not
+    // had this regime's packet gets it, on arrival and at dusk and dawn.
+    const int regime = SkyRegime();
+    std::set<ObjectGuid> seen;
+    for (auto const& entry : sObjectAccessor.GetPlayers())
+    {
+        Player* player = entry.second;
+        if (!player || !player->IsInWorld() || !player->GetSession())
+            continue;
+        PlayerbotAI* ai = player->GetPlayerbotAI();
+        if (ai && !ai->IsRealPlayer())
+            continue;
+        seen.insert(player->GetObjectGuid());
+        int& sent = skySent_[player->GetObjectGuid()];
+        if (sent != regime)
+        {
+            SendSky(player, regime);
+            sent = regime;
+        }
+    }
+    for (auto it = skySent_.begin(); it != skySent_.end();)
+        it = seen.count(it->first) ? std::next(it) : skySent_.erase(it);
+}
 
 std::vector<Player*> Bridge::TrackedParty(std::vector<Player*>* reals)
 {
