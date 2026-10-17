@@ -1809,6 +1809,55 @@ std::optional<Json> Bridge::CmdWeather(const BridgeInbound&, const Json& args)
     return result;
 }
 
+// sound plays one of the client's own sounds to the real player, for the
+// mood of a moment: thunder, wolves, a bell, a march. The id is a row of
+// SoundEntries.dbc (the client's table; the server loads it too, so an id
+// it does not have is refused). Three ways to play it, 'kind':
+//   sound  (default) in the player's ears, from nowhere (SMSG_PLAY_SOUND);
+//   music  as the zone's music, until the zone's own comes back
+//          (SMSG_PLAY_MUSIC);
+//   from   out of somebody: a bot or a player named 'from', placed in the
+//          world, so it has a direction and fades with distance
+//          (SMSG_PLAY_OBJECT_SOUND).
+// Only the real player hears it (the bots have no ears). The core's own
+// '.debug play sound' does the same for a GM.
+std::optional<Json> Bridge::CmdSound(const BridgeInbound&, const Json& args)
+{
+    const uint32 id = OptionalUnsigned(args, "id", 0);
+    if (!id || !sSoundEntriesStore.LookupEntry(id))
+        throw BridgeCommandError("no sound " + std::to_string(id) + " in SoundEntries.dbc");
+    const std::string kind = OptionalString(args, "kind", "sound");
+    const std::string playerName = OptionalString(args, "player");
+    Player* player = nullptr;
+    if (!playerName.empty())
+        player = RequireOnlinePlayer(playerName, "player");
+    else
+    {
+        std::vector<Player*> reals = RealPlayersOnline();
+        if (reals.empty())
+            throw BridgeCommandError("no real player is online; pass 'player'");
+        player = reals.front();
+    }
+    const PlayPacketParameters toPlayer(PlayPacketSettings::TARGET, player);
+    Json result;
+    if (kind == "sound")
+        player->PlayDirectSound(id, toPlayer);
+    else if (kind == "music")
+        player->PlayMusic(id, toPlayer);
+    else if (kind == "from")
+    {
+        Player* source = RequireOnlinePlayer(RequireString(args, "from"), "from");
+        source->PlayDistanceSound(id, toPlayer);
+        result["from"] = source->GetName();
+    }
+    else
+        throw BridgeCommandError("unknown kind '" + kind + "' (sound, music, from)");
+    result["id"] = id;
+    result["kind"] = kind;
+    result["player"] = player->GetName();
+    return result;
+}
+
 // sky.set turns the bridge's sky clock (TurnTheSky) to a time of day; the
 // clients follow on the next tick and the cycle runs on from there. A way
 // to see the night without waiting for it. With the day cycle off the sky

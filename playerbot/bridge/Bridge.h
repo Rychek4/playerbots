@@ -215,6 +215,7 @@ private:
     std::optional<Json> CmdPlayerEmote(const BridgeInbound& in, const Json& args);
     std::optional<Json> CmdWeather(const BridgeInbound& in, const Json& args);
     std::optional<Json> CmdSkySet(const BridgeInbound& in, const Json& args);
+    std::optional<Json> CmdSound(const BridgeInbound& in, const Json& args);
     // Characters made to order (BridgeCommands.cpp, "Cast characters")
     std::optional<Json> CmdBotCreate(const BridgeInbound& in, const Json& args);
     std::optional<Json> CmdBotDelete(const BridgeInbound& in, const Json& args);
