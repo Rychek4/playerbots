@@ -257,6 +257,10 @@ Json Bridge::UnitRef(Unit* unit)
     // creature wears - the same field a player's comes from. The narrator
     // gives an NPC a man's or a woman's voice by it.
     ref["gender"] = uint32(unit->getGender());
+    // The model the creature was born in, not one a spell has put on it:
+    // the client's tables give every model the voice the game speaks it in,
+    // and the narrator's voice module casts an NPC's lines by it.
+    ref["display_id"] = unit->GetNativeDisplayId();
     if (unit->GetTypeId() == TYPEID_UNIT)
     {
         if (CreatureInfo const* info = static_cast<Creature*>(unit)->GetCreatureInfo())
