@@ -2557,6 +2557,16 @@ void PlayerbotAI::ResetStrategies(bool autoLoad)
     AiFactory::AddDefaultReactionStrategies(bot, this, reactionEngine);
     if (autoLoad && HasPlayerRelation()) sPlayerbotDbStore.Load(this);
 
+    // A companion stays quiet through a reset. The narrator puts every
+    // companion on "silent" once, when it joins; the module resets a bot's
+    // strategies whenever its master changes, which drops it unless "silent"
+    // was saved with the bot. On 18 October Alahr, the newest companion, was
+    // the only one whispering the module's own replies ("Cannot communicate
+    // with the quest giver", "wandermin range set to: 5", a trainer's price
+    // list); the three with "silent" saved were quiet.
+    if (sPlayerbotAIConfig.bridgeQuietBots && !IsRealPlayer() && HasRealPlayerMaster())
+        engines[(uint8)BotState::BOT_STATE_NON_COMBAT]->addStrategy("silent");
+
     for (uint8 i = 0; i < (uint8)BotState::BOT_STATE_ALL; i++)
     {
         engines[i]->initMode = false;
