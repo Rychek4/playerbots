@@ -113,6 +113,7 @@ void Bridge::Update(uint32 diff)
         return;
 
     TurnTheSky(diff);   // the clients' clock, whether or not a narrator is connected
+    TurnTheWeather(diff);   // the zones' weather, by the bridge's rule (BridgeWeather.cpp)
     DrainCommands();
     FlushPendingOutfits();
     FlushPendingAttach();

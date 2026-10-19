@@ -1796,7 +1796,13 @@ std::optional<Json> Bridge::CmdWeather(const BridgeInbound&, const Json& args)
 
     // The core's own zone weather: everyone in that zone on this map sees the
     // change at once. Unless permanent, the regular weather cycle resumes later.
-    map->SetWeather(zone, type, grade, permanent);
+    // With the bridge keeping the weather (TurnTheWeather) it is set as
+    // permanent, so the core's cycle does not turn it, and it holds until
+    // the bridge's next spell.
+    const bool hold = permanent || WeatherOn();
+    map->SetWeather(zone, type, grade, hold);
+    if (!permanent)
+        HoldWeather(map->GetId(), map->GetInstanceId(), zone);
 
     Json result;
     result["map"] = map->GetId();
@@ -1806,6 +1812,7 @@ std::optional<Json> Bridge::CmdWeather(const BridgeInbound&, const Json& args)
     result["type"] = typeName;
     result["grade"] = grade;
     result["permanent"] = permanent;
+    result["until_next_spell"] = !permanent && WeatherOn();
     return result;
 }
 

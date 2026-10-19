@@ -192,6 +192,45 @@ private:
     double skySeconds_ = 8 * 3600.0;           // game seconds since midnight; the server starts at 08:00
     uint32 skyTick_ = 0;                       // ms since the clients were last checked
     std::map<ObjectGuid, int> skySent_;        // real player -> the regime their client was last sent
+
+    // The weather (AiPlayerbot.Bridge.Weather*, BridgeWeather.cpp): fronts
+    // that gather, build, peak, ease and clear, rolled by rule per zone with
+    // a real player in it, by a hash rather than a die. World thread only.
+    struct WeatherZone
+    {
+        uint32 map, instance, zone;
+        bool operator<(const WeatherZone& o) const
+        {
+            return map != o.map ? map < o.map : instance != o.instance ? instance < o.instance : zone < o.zone;
+        }
+    };
+    struct WeatherNow
+    {
+        uint32 type = 0;                       // WeatherType; 0 is fine
+        float grade = 0.0f;
+    };
+    struct WeatherFront
+    {
+        bool known = false;                    // the zone has a game_weather row
+        uint32 type = 0;                       // WeatherType; 0: no front, the sky is clear
+        float peak = 0.0f;
+        uint64 gather = 0, start = 0, end = 0; // unix seconds: gathering, first drops, clear
+        uint64 thunder = 0;                    // unix seconds: the next clap
+        uint64 rolled = 0;                     // the spell it was rolled in
+        WeatherNow sent;                       // what the zone was last sent
+        bool applied = false;
+    };
+    void TurnTheWeather(uint32 diff);
+    void HoldWeather(uint32 map, uint32 instance, uint32 zone);   // the weather command: the player's sky, until the next spell
+    bool WeatherOn() const;
+    bool WeatherNight() const;                 // by the sky's clock (TurnTheSky), else the server's
+    WeatherFront FrontFor(uint32 zone, uint64 spell, bool night) const;
+    WeatherNow WeatherAt(const WeatherFront& front, uint64 now) const;
+    void Thunder(const WeatherZone& key, WeatherFront& front, uint64 now, const std::vector<Player*>& here);
+    uint32 weatherTick_ = 0;                   // ms since the zones were last checked
+    std::map<WeatherZone, WeatherFront> weatherFront_;   // zone -> its front (or a clear sky)
+    std::map<WeatherZone, uint64> weatherHold_;          // zone -> unix seconds the player's own sky holds until
+    std::set<WeatherZone> weatherHere_;                  // zones with a real player in them at the last check
     std::vector<Player*> TrackedParty(std::vector<Player*>* reals = nullptr);
     bool IsDuplicate(const std::string& key);
     void ExpireDuplicates(uint32 now);
