@@ -1023,8 +1023,10 @@ AiPlayerbot.UseKnockback = 1
 # WeatherThunder at the peak; empty - silent. Nothing is rolled with a die: each roll and each
 # clap's timing is a hash of the zone and the time, so the same zone at the same time, under the
 # same settings, always gets the same weather. A zone with no game_weather row stays fine. The
-# overlay's weather buttons end the front and hold until the next spell. WeatherMinutes 0 - the
-# core's own cycle (ChangeWeatherInterval in mangosd.conf). Only with the bridge on.
+# overlay's weather buttons end the front and hold until the next spell. Off by default: with
+# Weather 0, or WeatherMinutes 0, the weather is the core's own cycle (ChangeWeatherInterval in
+# mangosd.conf). Only with the bridge on.
+#AiPlayerbot.Bridge.Weather = 0
 #AiPlayerbot.Bridge.WeatherMinutes = 15
 #AiPlayerbot.Bridge.WeatherOdds = 1.0
 #AiPlayerbot.Bridge.WeatherNight = 2.0

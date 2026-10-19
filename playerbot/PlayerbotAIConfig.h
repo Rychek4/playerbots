@@ -429,7 +429,8 @@ public:
     // and eases off; a storm gathers for WeatherGather minutes first, with
     // far thunder (WeatherThunderFar), and thunders at its peak
     // (WeatherThunder): SoundEntries ids, comma separated. 0: the core's own
-    // weather cycle.
+    // weather cycle. All of it only with bridgeWeather on (default off).
+    bool bridgeWeather;
     int bridgeWeatherMinutes;
     float bridgeWeatherOdds;
     float bridgeWeatherNight;

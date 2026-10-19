@@ -54,8 +54,8 @@
 // same settings, always gets the same weather, and the log can be worked
 // out again from the config. The weather is set as permanent, so the core's
 // own cycle never turns it. A zone with no `game_weather` row is left as
-// the core leaves it (always fine). WeatherMinutes 0: the core's cycle, as
-// before.
+// the core leaves it (always fine). Off by default (AiPlayerbot.Bridge.Weather,
+// the owner, 19 October); off, or WeatherMinutes 0: the core's cycle, as before.
 namespace
 {
     const float STORM_GRADE = 0.7f;             // heavy rain: the core's WEATHER_STATE_HEAVY_RAIN, the page's "storm"
@@ -122,7 +122,7 @@ namespace
 
 bool Bridge::WeatherOn() const
 {
-    return sPlayerbotAIConfig.bridgeWeatherMinutes > 0;
+    return sPlayerbotAIConfig.bridgeWeather && sPlayerbotAIConfig.bridgeWeatherMinutes > 0;
 }
 
 bool Bridge::WeatherNight() const

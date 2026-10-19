@@ -289,6 +289,7 @@ bool PlayerbotAIConfig::Initialize()
     bridgeWalkRest = config.GetFloatDefault("AiPlayerbot.Bridge.WalkRest", 20.0f);
     bridgeDayMinutes = config.GetIntDefault("AiPlayerbot.Bridge.DayMinutes", 60);
     bridgeNightMinutes = config.GetIntDefault("AiPlayerbot.Bridge.NightMinutes", 45);
+    bridgeWeather = config.GetBoolDefault("AiPlayerbot.Bridge.Weather", false);
     bridgeWeatherMinutes = config.GetIntDefault("AiPlayerbot.Bridge.WeatherMinutes", 15);
     bridgeWeatherOdds = config.GetFloatDefault("AiPlayerbot.Bridge.WeatherOdds", 1.0f);
     bridgeWeatherNight = config.GetFloatDefault("AiPlayerbot.Bridge.WeatherNight", 2.0f);
