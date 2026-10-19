@@ -193,9 +193,10 @@ void Bridge::Thunder(const WeatherZone& key, WeatherFront& front, uint64 now, co
         return;
     const bool gathering = now < front.start;
     const WeatherNow at = WeatherAt(front, now);
-    const std::vector<uint32> far = SoundIds(sPlayerbotAIConfig.bridgeWeatherThunderFar);
-    const std::vector<uint32> near = SoundIds(sPlayerbotAIConfig.bridgeWeatherThunder);
-    const std::vector<uint32>& sounds = gathering ? far : near;
+    // Not `far` and `near`: windows.h defines both as macros.
+    const std::vector<uint32> distant = SoundIds(sPlayerbotAIConfig.bridgeWeatherThunderFar);
+    const std::vector<uint32> overhead = SoundIds(sPlayerbotAIConfig.bridgeWeatherThunder);
+    const std::vector<uint32>& sounds = gathering ? distant : overhead;
     const uint64 hash = Hash(key.zone, front.thunder, 1);
     front.thunder = now + (gathering ? 40 + hash % 80 : 20 + hash % 40);   // far: every 40 to 120 s; overhead: 20 to 60 s
     if (sounds.empty() || (!gathering && at.grade < STORM_GRADE))
