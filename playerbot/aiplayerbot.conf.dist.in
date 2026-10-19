@@ -1011,6 +1011,19 @@ AiPlayerbot.UseKnockback = 1
 # client follows the server's clock. Only with the bridge on.
 #AiPlayerbot.Bridge.DayMinutes = 60
 #AiPlayerbot.Bridge.NightMinutes = 45
+# The weather, kept by the bridge by rule (the narrator never decides it). The day is cut into
+# spells of WeatherMinutes real minutes; each zone with a real player in it gets one weather a
+# spell: its own game_weather chances for the season, times WeatherOdds, and times WeatherNight
+# as well while the sky says night (22:00 to 05:00 by the bridge's clock). Rain, snow or storm
+# come at a grade from WeatherGrade up to 1 (the client shows nothing under about 0.27). The roll
+# is a hash of the zone and the spell, not a die: the same zone in the same spell, under the same
+# settings, always has the same weather. A zone with no game_weather row stays fine. The
+# overlay's weather buttons hold until the next spell. WeatherMinutes 0 - the core's own cycle
+# (ChangeWeatherInterval in mangosd.conf). Only with the bridge on.
+#AiPlayerbot.Bridge.WeatherMinutes = 15
+#AiPlayerbot.Bridge.WeatherOdds = 1.0
+#AiPlayerbot.Bridge.WeatherNight = 2.0
+#AiPlayerbot.Bridge.WeatherGrade = 0.3
 
 AiPlayerbot.PerfMonEnabled = 0
 

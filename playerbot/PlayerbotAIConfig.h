@@ -421,6 +421,15 @@ public:
     // that clock as the scene's game_time. Either 0: the server's clock.
     int bridgeDayMinutes;
     int bridgeNightMinutes;
+    // The weather (Bridge::TurnTheWeather): each zone with a real player in
+    // it gets the weather for a spell of this many real minutes, by rule:
+    // the zone's own game_weather chances times WeatherOdds, times
+    // WeatherNight as well at night, at a grade from WeatherGrade up. 0:
+    // the core's own weather cycle.
+    int bridgeWeatherMinutes;
+    float bridgeWeatherOdds;
+    float bridgeWeatherNight;
+    float bridgeWeatherGrade;
 
     bool perfMonEnabled;
     bool bExplicitDbStoreSave = false;

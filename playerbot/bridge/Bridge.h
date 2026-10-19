@@ -192,6 +192,32 @@ private:
     double skySeconds_ = 8 * 3600.0;           // game seconds since midnight; the server starts at 08:00
     uint32 skyTick_ = 0;                       // ms since the clients were last checked
     std::map<ObjectGuid, int> skySent_;        // real player -> the regime their client was last sent
+
+    // The weather (AiPlayerbot.Bridge.WeatherMinutes, BridgeWeather.cpp):
+    // each zone with a real player in it gets, for each spell of that many
+    // real minutes, the weather a rule gives it: the zone's own chances,
+    // more at night, at a grade that shows, by a hash of the zone and the
+    // spell rather than a die. World thread only.
+    struct WeatherZone
+    {
+        uint32 map, instance, zone;
+        bool operator<(const WeatherZone& o) const
+        {
+            return map != o.map ? map < o.map : instance != o.instance ? instance < o.instance : zone < o.zone;
+        }
+    };
+    struct WeatherCall
+    {
+        bool known = false;                    // the zone has a game_weather row
+        uint32 type = 0;                       // WeatherType; 0 is fine
+        float grade = 0.0f;
+    };
+    void TurnTheWeather(uint32 diff);
+    bool WeatherOn() const;
+    bool WeatherNight() const;                 // by the sky's clock (TurnTheSky), else the server's
+    WeatherCall WeatherFor(uint32 zone, uint64 spell, bool night) const;
+    uint32 weatherTick_ = 0;                   // ms since the zones were last checked
+    std::map<WeatherZone, uint64> weatherSpell_;   // zone with a real player -> the spell its weather was set for
     std::vector<Player*> TrackedParty(std::vector<Player*>* reals = nullptr);
     bool IsDuplicate(const std::string& key);
     void ExpireDuplicates(uint32 now);
