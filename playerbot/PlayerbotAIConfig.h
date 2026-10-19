@@ -421,15 +421,23 @@ public:
     // that clock as the scene's game_time. Either 0: the server's clock.
     int bridgeDayMinutes;
     int bridgeNightMinutes;
-    // The weather (Bridge::TurnTheWeather): each zone with a real player in
-    // it gets the weather for a spell of this many real minutes, by rule:
-    // the zone's own game_weather chances times WeatherOdds, times
-    // WeatherNight as well at night, at a grade from WeatherGrade up. 0:
-    // the core's own weather cycle.
+    // The weather (Bridge::TurnTheWeather): while the sky is clear, each zone
+    // with a real player in it rolls for a front every this many real
+    // minutes, by rule: the zone's own game_weather chances times
+    // WeatherOdds, times WeatherNight as well at night. A front lasts 1 to
+    // WeatherLength of those spells, builds from WeatherGrade to its peak
+    // and eases off; a storm gathers for WeatherGather minutes first, with
+    // far thunder (WeatherThunderFar), and thunders at its peak
+    // (WeatherThunder): SoundEntries ids, comma separated. 0: the core's own
+    // weather cycle.
     int bridgeWeatherMinutes;
     float bridgeWeatherOdds;
     float bridgeWeatherNight;
     float bridgeWeatherGrade;
+    int bridgeWeatherLength;
+    int bridgeWeatherGather;
+    std::string bridgeWeatherThunderFar;
+    std::string bridgeWeatherThunder;
 
     bool perfMonEnabled;
     bool bExplicitDbStoreSave = false;

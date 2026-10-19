@@ -293,6 +293,10 @@ bool PlayerbotAIConfig::Initialize()
     bridgeWeatherOdds = config.GetFloatDefault("AiPlayerbot.Bridge.WeatherOdds", 1.0f);
     bridgeWeatherNight = config.GetFloatDefault("AiPlayerbot.Bridge.WeatherNight", 2.0f);
     bridgeWeatherGrade = config.GetFloatDefault("AiPlayerbot.Bridge.WeatherGrade", 0.3f);
+    bridgeWeatherLength = config.GetIntDefault("AiPlayerbot.Bridge.WeatherLength", 4);
+    bridgeWeatherGather = config.GetIntDefault("AiPlayerbot.Bridge.WeatherGather", 5);
+    bridgeWeatherThunderFar = config.GetStringDefault("AiPlayerbot.Bridge.WeatherThunderFar", "");
+    bridgeWeatherThunder = config.GetStringDefault("AiPlayerbot.Bridge.WeatherThunder", "");
 
     perfMonEnabled = config.GetBoolDefault("AiPlayerbot.PerfMonEnabled", false);
     bExplicitDbStoreSave = config.GetBoolDefault("AiPlayerbot.ExplicitDbStoreSave", false);

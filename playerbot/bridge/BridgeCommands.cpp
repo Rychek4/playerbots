@@ -1801,6 +1801,8 @@ std::optional<Json> Bridge::CmdWeather(const BridgeInbound&, const Json& args)
     // the bridge's next spell.
     const bool hold = permanent || WeatherOn();
     map->SetWeather(zone, type, grade, hold);
+    if (!permanent)
+        HoldWeather(map->GetId(), map->GetInstanceId(), zone);
 
     Json result;
     result["map"] = map->GetId();

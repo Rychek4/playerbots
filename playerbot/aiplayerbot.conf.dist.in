@@ -1011,19 +1011,28 @@ AiPlayerbot.UseKnockback = 1
 # client follows the server's clock. Only with the bridge on.
 #AiPlayerbot.Bridge.DayMinutes = 60
 #AiPlayerbot.Bridge.NightMinutes = 45
-# The weather, kept by the bridge by rule (the narrator never decides it). The day is cut into
-# spells of WeatherMinutes real minutes; each zone with a real player in it gets one weather a
-# spell: its own game_weather chances for the season, times WeatherOdds, and times WeatherNight
-# as well while the sky says night (22:00 to 05:00 by the bridge's clock). Rain, snow or storm
-# come at a grade from WeatherGrade up to 1 (the client shows nothing under about 0.27). The roll
-# is a hash of the zone and the spell, not a die: the same zone in the same spell, under the same
-# settings, always has the same weather. A zone with no game_weather row stays fine. The
-# overlay's weather buttons hold until the next spell. WeatherMinutes 0 - the core's own cycle
-# (ChangeWeatherInterval in mangosd.conf). Only with the bridge on.
+# The weather, kept by the bridge by rule (the narrator never decides it), in fronts. While the
+# sky is clear, each zone with a real player in it rolls for a front every WeatherMinutes real
+# minutes: its own game_weather chances for the season, times WeatherOdds, and times WeatherNight
+# as well while the sky says night (22:00 to 05:00 by the bridge's clock). A front lasts 1 to
+# WeatherLength of those spells: the first drops at WeatherGrade (the client shows nothing under
+# about 0.27), building to its peak over the first half, held through the third quarter, easing
+# off over the last, then clear. Rain that peaks at 0.7 or more is a storm: it gathers first, for
+# WeatherGather minutes of clear sky and far thunder, and thunders overhead at its peak. The
+# thunder is SoundEntries.dbc ids, comma separated: WeatherThunderFar while it gathers,
+# WeatherThunder at the peak; empty - silent. Nothing is rolled with a die: each roll and each
+# clap's timing is a hash of the zone and the time, so the same zone at the same time, under the
+# same settings, always gets the same weather. A zone with no game_weather row stays fine. The
+# overlay's weather buttons end the front and hold until the next spell. WeatherMinutes 0 - the
+# core's own cycle (ChangeWeatherInterval in mangosd.conf). Only with the bridge on.
 #AiPlayerbot.Bridge.WeatherMinutes = 15
 #AiPlayerbot.Bridge.WeatherOdds = 1.0
 #AiPlayerbot.Bridge.WeatherNight = 2.0
 #AiPlayerbot.Bridge.WeatherGrade = 0.3
+#AiPlayerbot.Bridge.WeatherLength = 4
+#AiPlayerbot.Bridge.WeatherGather = 5
+#AiPlayerbot.Bridge.WeatherThunderFar =
+#AiPlayerbot.Bridge.WeatherThunder =
 
 AiPlayerbot.PerfMonEnabled = 0
 
