@@ -2265,17 +2265,23 @@ std::optional<Json> Bridge::CmdBotDelete(const BridgeInbound&, const Json& args)
 
 std::optional<Json> Bridge::CmdBotLevel(const BridgeInbound&, const Json& args)
 {
-    // Re-level a made-to-order character in place: a chapter needs it a little
-    // older, or an early random pass left it wrong. Cast characters only, and
-    // it must be in the world (add it, or bot.login it, first).
+    // Re-level a character in place: a chapter needs a made-to-order one a
+    // little older, or the narrator brings a companion up to the player's level
+    // (the owner, 21 October). A cast character, or a bot a real player has as
+    // a companion; never the real player, and never a pool bot nobody leads.
+    // It must be in the world (add it, or bot.login it, first).
     std::string name = RequireString(args, "name");
     if (!normalizePlayerName(name))
         throw BridgeCommandError("'" + name + "' is not a valid character name");
     const ObjectGuid guid = sObjectMgr.GetPlayerGuidByName(name);
     if (guid.IsEmpty())
         throw BridgeCommandError("no character named '" + name + "'");
-    if (!sPlayerbotAIConfig.IsInCastAccountList(sObjectMgr.GetPlayerAccountIdByGUID(guid)))
-        throw BridgeCommandError("'" + name + "' is not a cast character (only characters made by bot.create can be re-levelled here)");
+    const bool cast = sPlayerbotAIConfig.IsInCastAccountList(sObjectMgr.GetPlayerAccountIdByGUID(guid));
+    Player* const online = FindOnlinePlayer(name);
+    PlayerbotAI* const led = online ? online->GetPlayerbotAI() : nullptr;
+    const bool companion = led && !led->IsRealPlayer() && led->HasRealPlayerMaster();
+    if (!cast && !companion)
+        throw BridgeCommandError("'" + name + "' is neither a cast character nor a real player's companion (only those can be re-levelled here)");
 
     const uint32 maxLevel = sWorld.getConfig(CONFIG_UINT32_MAX_PLAYER_LEVEL);
     const uint32 level = OptionalUnsigned(args, "level", 0);
