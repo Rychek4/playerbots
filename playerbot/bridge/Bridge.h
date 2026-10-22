@@ -71,6 +71,8 @@ namespace BridgeProtocol
     constexpr char EV_STANDING_CHANGED[] = "standing.changed";
     constexpr char EV_RELEASED[] = "released";
     constexpr char EV_BOT_ARRIVED[] = "bot.arrived";
+    constexpr char EV_NPC_ARRIVED[] = "npc.arrived";   // set pieces (BridgeSetPieces.cpp): a summon's trip is over
+    constexpr char EV_NPC_STATE[] = "npc.state";       // set pieces: a summon's alive, fighting, seen or gone changed
 
     constexpr uint32 DUPLICATE_WINDOW_MS = 2000;
 }
@@ -128,6 +130,7 @@ public:
     static Json PartyMember(Player* player);
     static Json QuestLog(Player* player, size_t most);
     static Json NearbyUnit(Player* center, Unit* unit);
+    static const char* RankName(uint32 rank);   // a creature's rank as the game names it (CreatureInfo::Rank)
     Json BuildScene(Player* center);
 
 private:
@@ -171,6 +174,7 @@ private:
     void WatchZone(Player* player);
     void WatchStanding(Player* player); // every bubble interval: a rank changing with a faction
     void WatchTrips();                  // every bubble interval: companions sent somewhere by bot.go
+    void WatchSummons();                // every bubble interval: what set pieces summoned (BridgeSetPieces.cpp)
     void WatchGroup(Player* real);
     bool Announces(Player* bot) const;  // is this bot's coming and going any business of a client's?
     void EmitBotLogin(Player* bot);     // the bot.login event proper, once the bot is really in the world
@@ -272,6 +276,14 @@ private:
     std::optional<Json> CmdBotAbout(const BridgeInbound& in, const Json& args);
     std::optional<Json> CmdBotTrain(const BridgeInbound& in, const Json& args);
     std::optional<Json> CmdBotGo(const BridgeInbound& in, const Json& args);
+    // Set pieces (BridgeSetPieces.cpp): a zone read by its name, and what a
+    // set piece does in the world
+    std::optional<Json> CmdWorldZone(const BridgeInbound& in, const Json& args);
+    std::optional<Json> CmdNpcSummon(const BridgeInbound& in, const Json& args);
+    std::optional<Json> CmdNpcGo(const BridgeInbound& in, const Json& args);
+    std::optional<Json> CmdNpcAttack(const BridgeInbound& in, const Json& args);
+    std::optional<Json> CmdNpcFind(const BridgeInbound& in, const Json& args);
+    std::optional<Json> CmdNpcDespawn(const BridgeInbound& in, const Json& args);
 
     // A companion sent somewhere by bot.go: where to, and how often the walk
     // has been taken up again after something stopped it.
@@ -284,6 +296,27 @@ private:
         std::vector<std::string> lifted;   // the strategies taken off for the trip, put back at its end
     };
     std::map<ObjectGuid, Trip> trips_;
+
+    // A creature a set piece summoned (npc.summon), kept by guid only and
+    // looked up again on its map every time, never held by pointer. What was
+    // last reported of it (npc.state), and its trip while it has one
+    // (npc.go): a creature's trip is a bot trip's method, kept apart.
+    struct SetPieceSummon
+    {
+        uint32 map = 0;
+        uint32 instance = 0;
+        bool reported = false;              // the first watch reports it whatever it is
+        bool alive = true;
+        bool fighting = false;
+        bool seen = false;
+        bool going = false;
+        float x = 0.0f, y = 0.0f, z = 0.0f;
+        std::string to;
+        bool run = false;
+        uint32 retries = 0;
+    };
+    std::map<ObjectGuid, SetPieceSummon> summons_;
+    Creature* FindSummon(const Json& args, ObjectGuid* guid = nullptr);
     static void EndTrip(Player* bot, Trip const& trip);
     static void QuestsAt(Player* player, Creature* giver, Json& offered, Json& turnIn, size_t most);
     static uint32 GetOrCreateCastAccount(std::string& error);
