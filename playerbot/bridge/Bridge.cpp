@@ -52,6 +52,12 @@ Bridge::Bridge()
     handlers_["bot.about"] = &Bridge::CmdBotAbout;
     handlers_["bot.train"] = &Bridge::CmdBotTrain;
     handlers_["bot.go"] = &Bridge::CmdBotGo;
+    handlers_["world.zone"] = &Bridge::CmdWorldZone;
+    handlers_["npc.summon"] = &Bridge::CmdNpcSummon;
+    handlers_["npc.go"] = &Bridge::CmdNpcGo;
+    handlers_["npc.attack"] = &Bridge::CmdNpcAttack;
+    handlers_["npc.find"] = &Bridge::CmdNpcFind;
+    handlers_["npc.despawn"] = &Bridge::CmdNpcDespawn;
 }
 
 Bridge::~Bridge()
@@ -85,6 +91,9 @@ void Bridge::Start()
     hello["build"] = "cmangos";
 #endif
     hello["realm"] = std::to_string(realmID);
+    // When this world server started (Unix seconds). A set piece plays once
+    // per server start: the narrator keeps what has played against this.
+    hello["started"] = int64(sWorld.GetStartTime());
 
     const std::string bindIp = sPlayerbotAIConfig.bridgeBindIp.empty() ? std::string("127.0.0.1") : sPlayerbotAIConfig.bridgeBindIp;
     const uint32 maxClients = sPlayerbotAIConfig.bridgeMaxClients > 0 ? uint32(sPlayerbotAIConfig.bridgeMaxClients) : 1u;
