@@ -8,8 +8,9 @@
 //   world.zone   a zone read by its name, with nobody standing there: its
 //                areas with a point in each, the creatures spawned in it, the
 //                hostile ones spawned nowhere at all (only scripts put those
-//                in the world), and its quests. What a set piece is written
-//                from, by a frontier model, before anything plays.
+//                in the world) at the zone's levels, and its quests. What a
+//                set piece is written from, by a frontier model, before
+//                anything plays.
 //   npc.summon   a creature by its template at a point, for a while
 //   npc.go       one of those sent to a point: a trip, by bot.go's method
 //   npc.attack   one creature set on another
@@ -48,6 +49,7 @@
 #include "Maps/MapManager.h"
 #include "MotionGenerators/MotionMaster.h"
 #include "Movement/MoveSpline.h"
+#include "Pools/PoolManager.h"
 #include "Quests/QuestDef.h"
 #include "Server/DBCStores.h"
 #include "Server/DBCStructure.h"
@@ -60,6 +62,7 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace BridgeProtocol;
@@ -223,6 +226,42 @@ namespace
         return sides;
     }
 
+    // A monster: a faction that attacks both sides' players. A zone's own
+    // guards and flight master attack one side only, so counting them as
+    // hostile put every zone's levels at 5 to 55 (1 November).
+    bool SetPieceIsMonster(uint32 faction)
+    {
+        return SetPieceHostileTo(faction).size() == 2;
+    }
+
+    // The zone's levels: the narrowest run of levels holding `share` of the
+    // monsters' spawn points, each template's points spread over its own
+    // levels. One rare at 26 or a boss in a corner does not stretch it.
+    // Returns {0, 0} with no monsters (a city).
+    std::pair<uint32, uint32> SetPieceLevelBand(std::map<uint32, double> const& pointsByLevel, double share)
+    {
+        double total = 0.0;
+        for (auto const& [level, points] : pointsByLevel)
+            total += points;
+        if (total <= 0.0)
+            return {0, 0};
+        std::pair<uint32, uint32> best{0, 0};
+        for (auto low = pointsByLevel.begin(); low != pointsByLevel.end(); ++low)
+        {
+            double held = 0.0;
+            for (auto high = low; high != pointsByLevel.end(); ++high)
+            {
+                held += high->second;
+                if (held < share * total)
+                    continue;
+                if (!best.second || high->first - low->first < best.second - best.first)
+                    best = {low->first, high->first};
+                break;
+            }
+        }
+        return best;
+    }
+
     // A creature template as the catalog gives it.
     Json SetPieceTemplate(CreatureInfo const* info)
     {
@@ -326,9 +365,15 @@ std::optional<Json> Bridge::CmdWorldZone(const BridgeInbound&, const Json& args)
     // Who is spawned in the zone, by template, with how many stand in each
     // area; and every template spawned anywhere at all, random entries
     // included (creature_spawn_entry), for the summonable list.
+    // `count` is spawn points. A rare has many and stands at one at a time:
+    // the core keeps such points in a pool and spawns up to the pool's
+    // limit, so `at_once` is what stands: the unpooled points, and for each
+    // pool the fewer of its limit and its points of this template.
     struct Spawned
     {
         uint32 count = 0;
+        uint32 unpooled = 0;
+        std::map<uint16, uint32> pooled;    // top pool id -> points in it
         std::map<std::string, uint32> areas;
     };
     std::map<uint32, Spawned> inZone;
@@ -346,18 +391,24 @@ std::optional<Json> Bridge::CmdWorldZone(const BridgeInbound&, const Json& args)
             return false;
         AreaTableEntry const* area = GetAreaEntryByAreaID(sTerrainMgr.GetAreaId(data.mapid, data.posX, data.posY, data.posZ));
         const std::string areaName = area ? std::string(area->area_name[0]) : zoneName;
+        const uint16 pool = sPoolMgr.IsPartOfTopPool<Creature>(pair.first);
         for (uint32 entry : entries)
         {
             Spawned& spawned = inZone[entry];
             ++spawned.count;
+            if (pool)
+                ++spawned.pooled[pool];
+            else
+                ++spawned.unpooled;
             ++spawned.areas[areaName];
         }
         return false;
     };
     sObjectMgr.DoCreatureData(worker);
 
-    // The zone's levels: its hostile creatures', unless the caller says.
-    uint32 levelLow = 0, levelHigh = 0;
+    // The zone's levels: where its monsters stand (SetPieceLevelBand),
+    // unless the caller says.
+    std::map<uint32, double> monsterPointsByLevel;
     Json creatures = Json::array();
     for (auto const& [entry, spawned] : inZone)
     {
@@ -366,19 +417,26 @@ std::optional<Json> Bridge::CmdWorldZone(const BridgeInbound&, const Json& args)
             continue;
         Json creature = SetPieceTemplate(info);
         creature["count"] = spawned.count;
+        uint32 atOnce = spawned.unpooled;
+        for (auto const& [pool, points] : spawned.pooled)
+            atOnce += std::min(points, sPoolMgr.GetPoolTemplate(pool).MaxLimit);
+        creature["at_once"] = atOnce;
         Json where = Json::object();
         for (auto const& [area, count] : spawned.areas)
             where[area] = count;
         creature["areas"] = where;
-        if (!creature["hostile_to"].empty())
+        if (SetPieceIsMonster(info->Faction))
         {
-            levelLow = levelLow ? std::min(levelLow, info->MinLevel) : info->MinLevel;
-            levelHigh = std::max(levelHigh, info->MaxLevel);
+            const uint32 low = std::min(info->MinLevel, info->MaxLevel);
+            const uint32 high = std::max(info->MinLevel, info->MaxLevel);
+            for (uint32 level = low; level <= high; ++level)
+                monsterPointsByLevel[level] += double(spawned.count) / double(high - low + 1);
         }
         creatures.push_back(creature);
     }
-    levelLow = SetPieceUnsigned(args, "level_min", levelLow);
-    levelHigh = SetPieceUnsigned(args, "level_max", levelHigh);
+    const auto band = SetPieceLevelBand(monsterPointsByLevel, 0.95);
+    const uint32 levelLow = SetPieceUnsigned(args, "level_min", band.first);
+    const uint32 levelHigh = SetPieceUnsigned(args, "level_max", band.second);
 
     // What could be summoned: hostile templates spawned nowhere, at the
     // zone's levels, strongest first. Nothing is dropped by its name: a
