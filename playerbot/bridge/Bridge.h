@@ -73,6 +73,7 @@ namespace BridgeProtocol
     constexpr char EV_BOT_ARRIVED[] = "bot.arrived";
     constexpr char EV_NPC_ARRIVED[] = "npc.arrived";   // set pieces (BridgeSetPieces.cpp): a summon's trip is over
     constexpr char EV_NPC_STATE[] = "npc.state";       // set pieces: a summon's alive, fighting, seen or gone changed
+    constexpr char EV_PARTY_KILL[] = "party.kill";     // the party landed a killing blow (SMSG_PARTYKILLLOG)
 
     constexpr uint32 DUPLICATE_WINDOW_MS = 2000;
 }
