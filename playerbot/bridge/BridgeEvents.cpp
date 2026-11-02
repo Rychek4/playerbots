@@ -1342,6 +1342,40 @@ void Bridge::OnOutgoingPacket(Player* receiver, const WorldPacket& packet)
                 break;
             }
 
+            case SMSG_PARTYKILLLOG:
+            {
+                // The party landed a killing blow: who, and on what. The core
+                // sends it to the killer and to the party in range of the
+                // victim, once each; the real player's copy is the one that
+                // counts, so a kill is said once. What the victim was is read
+                // off its guid (a creature's carries its entry), since it may
+                // already be a corpse. A set piece may start on it (a camp
+                // answering its lieutenant's death).
+                if (receiver->GetPlayerbotAI() && !receiver->GetPlayerbotAI()->IsRealPlayer())
+                    break;
+                WorldPacket p(packet);
+                p.rpos(0);
+                ObjectGuid killer, victim;
+                p >> killer >> victim;
+                Json data;
+                data["unit"] = PlayerRefByGuid(killer);
+                Json who;
+                who["guid"] = GuidString(victim);
+                if (victim.IsCreatureOrPet())
+                {
+                    who["entry"] = victim.GetEntry();
+                    if (CreatureInfo const* info = ObjectMgr::GetCreatureTemplate(victim.GetEntry()))
+                        who["name"] = std::string(info->Name ? info->Name : "");
+                    who["kind"] = "creature";
+                }
+                else
+                    who["kind"] = victim.IsPlayer() ? "player" : "other";
+                data["victim"] = who;
+                data["player"] = PlayerRef(receiver);
+                Emit(EV_PARTY_KILL, data);
+                break;
+            }
+
             case SMSG_WEATHER:
             {
                 // What the real player's sky is doing. Bots in the zone get the
