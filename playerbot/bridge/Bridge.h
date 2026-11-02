@@ -309,14 +309,30 @@ private:
         bool alive = true;
         bool fighting = false;
         bool seen = false;
-        bool going = false;
+    };
+    std::map<ObjectGuid, SetPieceSummon> summons_;
+    Creature* FindSummon(const Json& args, ObjectGuid* guid = nullptr);
+
+    // A creature on a trip (npc.go): a summon, or anybody else a set piece
+    // sends somewhere (a resident; the owner, 2 November). Kept by guid and
+    // looked up again every watch. To a point, home to its spawn, or after a
+    // real player (`hunting`), re-aimed as they move. `pace` slows it for the
+    // trip: the rate it had is put back when the trip ends.
+    struct SetPieceTrip
+    {
+        uint32 map = 0;
+        uint32 instance = 0;
         float x = 0.0f, y = 0.0f, z = 0.0f;
         std::string to;
         bool run = false;
         uint32 retries = 0;
+        float pace = 1.0f;
+        float rateBefore = 1.0f;
+        ObjectGuid hunting;                 // a real player, when the trip is after one
+        float within = 8.0f;                // a hunt is over this close to them
     };
-    std::map<ObjectGuid, SetPieceSummon> summons_;
-    Creature* FindSummon(const Json& args, ObjectGuid* guid = nullptr);
+    std::map<ObjectGuid, SetPieceTrip> creatureTrips_;
+    void WatchCreatureTrips();
     static void EndTrip(Player* bot, Trip const& trip);
     static void QuestsAt(Player* player, Creature* giver, Json& offered, Json& turnIn, size_t most);
     static uint32 GetOrCreateCastAccount(std::string& error);

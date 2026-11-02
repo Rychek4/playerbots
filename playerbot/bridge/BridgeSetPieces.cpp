@@ -12,16 +12,24 @@
 //                set piece is written from, by a frontier model, before
 //                anything plays.
 //   npc.summon   a creature by its template at a point, for a while
-//   npc.go       one of those sent to a point: a trip, by bot.go's method
+//   npc.go       a creature sent somewhere: a trip, by bot.go's method. A
+//                summon or a resident; to a point, home, or after a real
+//                player (a hunt); at its own pace
 //   npc.attack   one creature set on another
 //   npc.find     the living creatures of one template nearest a point
 //   npc.despawn  one of ours, taken out of the world now
 //
-//   npc.arrived  a summon's trip is over: there, or given up
+//   npc.arrived  a trip is over: there, or given up
 //   npc.state    a summon's alive, fighting, seen or gone changed
 //
 // npc.say and weather, which a set piece also uses, are the bridge's own
 // (BridgeCommands.cpp) and are used as they are.
+//
+// A point may come without its height: the server owns the ground. Given `x`
+// and `y` alone, the point is put on the ground there (the highest surface,
+// so a roof or a bridge where there is one) and refused when that is under
+// water. A frontier model writes points read off a map, never heights (the
+// owner, 2 November).
 //
 // Every handler runs on the world thread (Bridge.h). A summon is kept by its
 // guid and looked up again on its map every time it is needed: nothing here
@@ -42,6 +50,7 @@
 #include "Entities/GameObject.h"
 #include "Entities/Object.h"
 #include "Entities/Player.h"
+#include "Globals/ObjectAccessor.h"
 #include "Globals/ObjectMgr.h"
 #include "Maps/GridDefines.h"
 #include "Maps/GridMap.h"
@@ -57,6 +66,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstring>
 #include <map>
 #include <set>
@@ -136,6 +146,30 @@ namespace
     {
         if (!MaNGOS::IsValidMapCoord(x, y, z))
             throw BridgeCommandError("that point is off the map");
+    }
+
+    // The point a command names: `x` and `y`, and `z` when the caller has it;
+    // without it, the ground there, refused under water. Returns whether the
+    // height was the server's.
+    bool SetPiecePoint(Map* map, const Json& args, float& x, float& y, float& z)
+    {
+        x = float(SetPieceRequireNumber(args, "x"));
+        y = float(SetPieceRequireNumber(args, "y"));
+        if (args.contains("z") && !args["z"].is_null())
+        {
+            z = float(SetPieceRequireNumber(args, "z"));
+            SetPieceRequirePoint(x, y, z);
+            return false;
+        }
+        if (!MaNGOS::IsValidMapCoord(x, y))
+            throw BridgeCommandError("that point is off the map");
+        z = map->GetHeight(x, y, MAX_HEIGHT);
+        if (z <= INVALID_HEIGHT)
+            throw BridgeCommandError("there is no ground at that point");
+        if (map->GetTerrain()->IsInWater(x, y, z + 0.5f))
+            throw BridgeCommandError("that point is under water");
+        SetPieceRequirePoint(x, y, z);
+        return true;
     }
 
     Json SetPiecePos(float x, float y, float z)
@@ -262,6 +296,41 @@ namespace
         return best;
     }
 
+    // How tall a template stands, in yards: its scale, its first model's
+    // display scale, and the model's collision height from the game's own
+    // tables (CreatureDisplayInfo, CreatureModelData). The core's own
+    // GetCollisionHeight leaves the display scale out; the client draws with
+    // it, and what is drawn is what a frontier model must judge (the owner,
+    // 2 November: the remote-controlled golem stood a yard high where a
+    // Stitches was wanted). 0 when the tables do not say.
+    float SetPieceHeight(CreatureInfo const* info)
+    {
+        uint32 display = 0;
+        for (uint32 i = 0; i < MAX_CREATURE_MODEL && !display; ++i)
+            display = info->DisplayId[i];
+        CreatureDisplayInfoEntry const* shown = display ? sCreatureDisplayInfoStore.LookupEntry(display) : nullptr;
+        CreatureModelDataEntry const* model = shown ? sCreatureModelDataStore.LookupEntry(shown->ModelId) : nullptr;
+        if (!model)
+            return 0.0f;
+        const float scale = info->Scale > 0.0f ? info->Scale : 1.0f;
+        const float displayScale = shown->scale > 0.0f ? shown->scale : 1.0f;
+        return scale * displayScale * model->CollisionHeight;
+    }
+
+    // A signpost: a game object whose model is one of the game's signposts
+    // (its display's model path, under a Signposts folder). The game's own
+    // road markers, placed by hand at junctions and on the roads, each arm
+    // named for where it points.
+    bool SetPieceIsSign(GameObjectInfo const* info)
+    {
+        GameObjectDisplayInfoEntry const* shown = info ? sGameObjectDisplayInfoStore.LookupEntry(info->displayId) : nullptr;
+        if (!shown || !shown->filename)
+            return false;
+        std::string path = shown->filename;
+        std::transform(path.begin(), path.end(), path.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+        return path.find("signpost") != std::string::npos;
+    }
+
     // A creature template as the catalog gives it.
     Json SetPieceTemplate(CreatureInfo const* info)
     {
@@ -276,6 +345,9 @@ namespace
         entry["type"] = SetPieceTypeName(info->CreatureType);
         entry["hostile_to"] = SetPieceHostileTo(info->Faction);
         entry["services"] = SetPieceServices(info->NpcFlags);
+        const float height = SetPieceHeight(info);
+        if (height > 0.0f)
+            entry["height"] = std::round(height * 10.0f) / 10.0f;
         return entry;
     }
 
@@ -548,6 +620,53 @@ std::optional<Json> Bridge::CmdWorldZone(const BridgeInbound&, const Json& args)
         questList.push_back(entry);
     }
 
+    // The zone's signposts: every one standing in it, the pieces of one
+    // post (the post and its arms, each a game object) gathered by standing
+    // within a few yards of each other, with what the arms say.
+    struct Sign
+    {
+        float x, y, z;
+        std::set<std::string> says;
+    };
+    std::vector<Sign> signs;
+    auto signWorker = [&](GameObjectDataPair const& pair) -> bool
+    {
+        const GameObjectData& data = pair.second;
+        if (data.mapid != mapId)
+            return false;
+        GameObjectInfo const* info = sGOStorage.LookupEntry<GameObjectInfo>(data.id);
+        if (!SetPieceIsSign(info))
+            return false;
+        if (SetPieceTopZone(sTerrainMgr.GetAreaId(data.mapid, data.posX, data.posY, data.posZ)) != zoneId)
+            return false;
+        Sign* post = nullptr;
+        for (Sign& sign : signs)
+            if (std::hypot(sign.x - data.posX, sign.y - data.posY) <= 6.0f)
+                post = &sign;
+        if (!post)
+        {
+            signs.push_back(Sign{data.posX, data.posY, data.posZ, {}});
+            post = &signs.back();
+        }
+        if (info->name && *info->name)
+            post->says.insert(info->name);
+        return false;
+    };
+    sObjectMgr.DoGOData(signWorker);
+    Json signList = Json::array();
+    for (Sign const& sign : signs)
+    {
+        Json entry;
+        entry["pos"] = SetPiecePos(sign.x, sign.y, sign.z);
+        AreaTableEntry const* area = GetAreaEntryByAreaID(sTerrainMgr.GetAreaId(mapId, sign.x, sign.y, sign.z));
+        entry["area"] = area ? std::string(area->area_name[0]) : zoneName;
+        Json says = Json::array();
+        for (std::string const& text : sign.says)
+            says.push_back(text);
+        entry["says"] = says;
+        signList.push_back(entry);
+    }
+
     Json result;
     Json zoneRef;
     zoneRef["id"] = zoneId;
@@ -563,6 +682,7 @@ std::optional<Json> Bridge::CmdWorldZone(const BridgeInbound&, const Json& args)
     result["creatures"] = creatures;
     result["summonable"] = summonable;
     result["quests"] = questList;
+    result["signs"] = signList;
     return result;
 }
 
@@ -602,11 +722,9 @@ std::optional<Json> Bridge::CmdNpcSummon(const BridgeInbound&, const Json& args)
     Map* map = sMapMgr.FindMap(mapId, instance);
     if (!map)
         throw BridgeCommandError("that map is not loaded");
-    const float x = float(SetPieceRequireNumber(args, "x"));
-    const float y = float(SetPieceRequireNumber(args, "y"));
-    const float z = float(SetPieceRequireNumber(args, "z"));
+    float x, y, z;
+    SetPiecePoint(map, args, x, y, z);
     const float o = float(SetPieceNumber(args, "o", 0.0));
-    SetPieceRequirePoint(x, y, z);
     const double lifetime = SetPieceNumber(args, "lifetime", 1800.0);
     if (lifetime < 60.0 || lifetime > 7200.0)
         throw BridgeCommandError("argument 'lifetime' must be 60 to 7200 seconds");
@@ -630,6 +748,7 @@ std::optional<Json> Bridge::CmdNpcSummon(const BridgeInbound&, const Json& args)
     summon = SetPieceSummon();
     summon.map = mapId;
     summon.instance = instance;
+    creatureTrips_.erase(creature->GetObjectGuid());
 
     Json result;
     result["unit"] = UnitRef(creature);
@@ -637,47 +756,100 @@ std::optional<Json> Bridge::CmdNpcSummon(const BridgeInbound&, const Json& args)
     result["pos"] = SetPiecePos(creature->GetPositionX(), creature->GetPositionY(), creature->GetPositionZ());
     result["lifetime"] = uint32(lifetime);
     result["corpse"] = uint32(corpse);
+    const float height = SetPieceHeight(info);
+    if (height > 0.0f)
+        result["height"] = std::round(height * 10.0f) / 10.0f;
     return result;
 }
 
-// One of our summons sent to a point, the whole way: a creature's trip, by
-// the method of a bot's (bot.go, Bridge::WatchTrips), kept apart from the
-// bots' trips. Pathfound over the ground (MotionMaster::MovePoint), and taken
-// up again at the bubble interval whenever it stands still out of a fight,
-// so a fight, and the core walking it back to where the fight began, are left
-// alone. npc.arrived says when the trip is over, there or given up. Sent
-// again while on a trip, the new trip replaces the old one, which ends
-// without an event, as a bot's does.
+// A creature sent somewhere, the whole way: a trip, by the method of a
+// bot's (bot.go, Bridge::WatchTrips), kept apart from the bots' trips.
+// Pathfound over the ground (MotionMaster::MovePoint), and taken up again at
+// the bubble interval whenever it stands still out of a fight, so a fight,
+// and the core walking it back to where the fight began, are left alone.
+// npc.arrived says when the trip is over, there or given up. Sent again
+// while on a trip, the new trip replaces the old one, which ends without an
+// event, as a bot's does.
+//
+// Who: one of our summons by `guid`, or anybody else by `guid` and `map` (a
+// resident: the watch marching to the farm). Where: a point (`x`, `y`,
+// optional `z`), `home` (its own spawn), or `hunt` (a real player, `player`
+// by name or the first one on its map, followed as they move until it is
+// `within` yards of them, 8 by default: what makes a monster come for the
+// party rather than past it). How: `run`, and `pace` (0.1 to 1, the share of
+// its own speed it keeps for the trip, put back when the trip ends; a
+// creature slowed for a march is slowed in a fight on the way too).
 std::optional<Json> Bridge::CmdNpcGo(const BridgeInbound&, const Json& args)
 {
-    ObjectGuid guid;
-    Creature* creature = FindSummon(args, &guid);
+    const ObjectGuid guid = SetPieceGuid(args, "guid");
+    Creature* creature = summons_.count(guid) ? FindSummon(args) : FindCreature(args);
     if (!creature->IsAlive())
         throw BridgeCommandError("the creature is dead");
-    const float x = float(SetPieceRequireNumber(args, "x"));
-    const float y = float(SetPieceRequireNumber(args, "y"));
-    const float z = float(SetPieceRequireNumber(args, "z"));
-    SetPieceRequirePoint(x, y, z);
+    Map* map = creature->GetMap();
+    const double pace = SetPieceNumber(args, "pace", 1.0);
+    if (pace < 0.1 || pace > 1.0)
+        throw BridgeCommandError("argument 'pace' must be 0.1 to 1");
+    const double within = SetPieceNumber(args, "within", 8.0);
+    if (within < 2.0 || within > 40.0)
+        throw BridgeCommandError("argument 'within' must be 2 to 40 yards");
 
-    SetPieceSummon& summon = summons_[guid];
-    summon.going = true;
-    summon.x = x;
-    summon.y = y;
-    summon.z = z;
-    summon.to = OptionalString(args, "to");
-    summon.run = SetPieceBool(args, "run", false);
-    summon.retries = 0;
+    SetPieceTrip trip;
+    trip.map = creature->GetMapId();
+    trip.instance = creature->GetInstanceId();
+    trip.run = SetPieceBool(args, "run", false);
+    trip.to = OptionalString(args, "to");
+    trip.pace = float(pace);
+    trip.within = float(within);
+    if (SetPieceBool(args, "hunt", false))
+    {
+        const std::string name = OptionalString(args, "player");
+        Player* target = nullptr;
+        if (!name.empty())
+            target = FindOnlinePlayer(name);
+        else
+            for (Player* real : RealPlayersOnline())
+                if (real->GetMap() == map && (!target || creature->GetDistance(real) < creature->GetDistance(target)))
+                    target = real;
+        if (!target || target->GetMap() != map)
+            throw BridgeCommandError("nobody real is on its map to hunt");
+        trip.hunting = target->GetObjectGuid();
+        trip.x = target->GetPositionX();
+        trip.y = target->GetPositionY();
+        trip.z = target->GetPositionZ();
+        if (trip.to.empty())
+            trip.to = target->GetName();
+    }
+    else if (SetPieceBool(args, "home", false))
+    {
+        creature->GetRespawnCoord(trip.x, trip.y, trip.z);
+        if (trip.to.empty())
+            trip.to = "home";
+    }
+    else
+        SetPiecePoint(map, args, trip.x, trip.y, trip.z);
+
+    // a trip replaced puts back the pace it set before setting its own
+    const UnitMoveType moveType = trip.run ? MOVE_RUN : MOVE_WALK;
+    auto old = creatureTrips_.find(guid);
+    if (old != creatureTrips_.end())
+        creature->SetSpeedRate(old->second.run ? MOVE_RUN : MOVE_WALK, old->second.rateBefore, true);
+    trip.rateBefore = creature->GetSpeedRate(moveType);
+    if (trip.pace < 1.0f)
+        creature->SetSpeedRate(moveType, trip.rateBefore * trip.pace, true);
+    creatureTrips_[guid] = trip;
     if (!creature->IsInCombat())
-        creature->GetMotionMaster()->MovePoint(0, ::Position(x, y, z, 0.0f), summon.run ? FORCED_MOVEMENT_RUN : FORCED_MOVEMENT_WALK);
+        creature->GetMotionMaster()->MovePoint(0, ::Position(trip.x, trip.y, trip.z, 0.0f), trip.run ? FORCED_MOVEMENT_RUN : FORCED_MOVEMENT_WALK);
 
     Json result;
     result["unit"] = UnitRef(creature);
     Json to;
-    to["name"] = summon.to;
-    to["pos"] = SetPiecePos(x, y, z);
-    to["dist"] = creature->GetDistance(x, y, z);
+    to["name"] = trip.to;
+    to["pos"] = SetPiecePos(trip.x, trip.y, trip.z);
+    to["dist"] = creature->GetDistance(trip.x, trip.y, trip.z);
     result["to"] = to;
     result["going"] = true;
+    if (!trip.hunting.IsEmpty())
+        result["hunting"] = UnitRef(ObjectAccessor::FindPlayer(trip.hunting));
     return result;
 }
 
@@ -723,7 +895,8 @@ std::optional<Json> Bridge::CmdNpcFind(const BridgeInbound&, const Json& args)
         throw BridgeCommandError("that map is not loaded");
     const float x = float(SetPieceRequireNumber(args, "x"));
     const float y = float(SetPieceRequireNumber(args, "y"));
-    const float z = float(SetPieceRequireNumber(args, "z"));
+    const bool flat = !args.contains("z") || args["z"].is_null();   // no height: measured on the map
+    const float z = flat ? 0.0f : float(SetPieceRequireNumber(args, "z"));
     const float radius = float(SetPieceNumber(args, "radius", 300.0));
     const uint32 limit = SetPieceUnsigned(args, "limit", 1);
     if (limit < 1 || limit > 10)
@@ -744,7 +917,7 @@ std::optional<Json> Bridge::CmdNpcFind(const BridgeInbound&, const Json& args)
         Creature* creature = map->GetCreature(uint32(pair.first));
         if (!creature || !creature->IsInWorld() || !creature->IsAlive() || creature->GetEntry() != entry)
             return false;
-        const float dist = creature->GetDistance(x, y, z);
+        const float dist = flat ? creature->GetDistance2d(x, y) : creature->GetDistance(x, y, z);
         if (dist <= radius)
             found.emplace_back(dist, creature);
         return false;
@@ -780,13 +953,90 @@ std::optional<Json> Bridge::CmdNpcDespawn(const BridgeInbound&, const Json& args
     return result;
 }
 
+// What becomes of the trips (npc.go), at the bubble interval, while a client
+// is connected: each ends there (within five yards, or for a hunt within its
+// `within` of the player), or given up (stood still out of a fight thirty
+// times, died, gone, or the hunted player gone from its map), with
+// npc.arrived either way, and the pace it set put back. A hunt is re-aimed
+// whenever the player has moved four yards from where it was last aimed.
+void Bridge::WatchCreatureTrips()
+{
+    for (auto it = creatureTrips_.begin(); it != creatureTrips_.end();)
+    {
+        const ObjectGuid guid = it->first;
+        SetPieceTrip& trip = it->second;
+        Map* map = sMapMgr.FindMap(trip.map, trip.instance);
+        Creature* creature = map ? map->GetCreature(guid) : nullptr;
+        const bool gone = !creature || !creature->IsInWorld();
+        Player* hunted = trip.hunting.IsEmpty() ? nullptr : ObjectAccessor::FindPlayer(trip.hunting);
+        const ForcedMovement how = trip.run ? FORCED_MOVEMENT_RUN : FORCED_MOVEMENT_WALK;
+
+        bool done = false;
+        bool reached = false;
+        if (gone || !creature->IsAlive())
+            done = true;
+        else if (!trip.hunting.IsEmpty())
+        {
+            if (!hunted || !hunted->IsInWorld() || hunted->GetMap() != map || !hunted->IsAlive())
+                done = true;
+            else if (creature->GetDistance(hunted) <= trip.within)
+                done = reached = true;
+            else if (!creature->IsInCombat())
+            {
+                const bool moved = std::hypot(hunted->GetPositionX() - trip.x, hunted->GetPositionY() - trip.y) > 4.0f;
+                const bool still = !creature->IsMoving() && creature->movespline->Finalized();
+                if (still && ++trip.retries > SET_PIECE_MOST_RETRIES)
+                    done = true;
+                else if (moved || still)
+                {
+                    trip.x = hunted->GetPositionX();
+                    trip.y = hunted->GetPositionY();
+                    trip.z = hunted->GetPositionZ();
+                    creature->GetMotionMaster()->MovePoint(0, ::Position(trip.x, trip.y, trip.z, 0.0f), how);
+                }
+            }
+        }
+        else if (creature->GetDistance(trip.x, trip.y, trip.z) <= SET_PIECE_ARRIVED_YARDS)
+            done = reached = true;
+        else if (!creature->IsInCombat() && !creature->IsMoving() && creature->movespline->Finalized())
+        {
+            if (++trip.retries > SET_PIECE_MOST_RETRIES)
+                done = true;
+            else
+                creature->GetMotionMaster()->MovePoint(0, ::Position(trip.x, trip.y, trip.z, 0.0f), how);
+        }
+
+        if (!done)
+        {
+            ++it;
+            continue;
+        }
+        Json data;
+        if (gone)
+            data["unit"]["guid"] = GuidString(guid);
+        else
+        {
+            data["unit"] = UnitRef(creature);
+            if (trip.pace < 1.0f)
+                creature->SetSpeedRate(trip.run ? MOVE_RUN : MOVE_WALK, trip.rateBefore, true);
+        }
+        data["to"] = trip.to;
+        data["reached"] = reached;
+        data["pos"] = SetPiecePos(trip.x, trip.y, trip.z);
+        Emit(EV_NPC_ARRIVED, data);
+        it = creatureTrips_.erase(it);
+    }
+}
+
 // What becomes of our summons, at the bubble interval, while a client is
-// connected (Bridge::Update): a trip ended (npc.arrived), and alive, fighting,
-// seen or gone changed (npc.state). The first watch after a summon reports it
-// whatever it is. `seen` is the bridge's own measure of what is round the
-// party: within its scene radius of a real player, as unit.entered is.
+// connected (Bridge::Update): their trips first (WatchCreatureTrips, which
+// follows residents' too), then alive, fighting, seen or gone changed
+// (npc.state). The first watch after a summon reports it whatever it is.
+// `seen` is the bridge's own measure of what is round the party: within its
+// scene radius of a real player, as unit.entered is.
 void Bridge::WatchSummons()
 {
+    WatchCreatureTrips();
     if (summons_.empty())
         return;
     const float radius = sPlayerbotAIConfig.bridgeSceneRadius > 0.0f ? sPlayerbotAIConfig.bridgeSceneRadius : 40.0f;
@@ -803,34 +1053,6 @@ void Bridge::WatchSummons()
             ref["guid"] = GuidString(guid);
         else
             ref = UnitRef(creature);
-
-        if (summon.going)
-        {
-            bool done = false;
-            bool reached = false;
-            if (gone || !creature->IsAlive())
-                done = true;
-            else if (creature->GetDistance(summon.x, summon.y, summon.z) <= SET_PIECE_ARRIVED_YARDS)
-                done = reached = true;
-            else if (!creature->IsInCombat() && !creature->IsMoving() && creature->movespline->Finalized())
-            {
-                if (++summon.retries > SET_PIECE_MOST_RETRIES)
-                    done = true;
-                else
-                    creature->GetMotionMaster()->MovePoint(0, ::Position(summon.x, summon.y, summon.z, 0.0f),
-                                                           summon.run ? FORCED_MOVEMENT_RUN : FORCED_MOVEMENT_WALK);
-            }
-            if (done)
-            {
-                summon.going = false;
-                Json data;
-                data["unit"] = ref;
-                data["to"] = summon.to;
-                data["reached"] = reached;
-                data["pos"] = SetPiecePos(summon.x, summon.y, summon.z);
-                Emit(EV_NPC_ARRIVED, data);
-            }
-        }
 
         const bool alive = !gone && creature->IsAlive();
         const bool fighting = !gone && creature->IsInCombat();
